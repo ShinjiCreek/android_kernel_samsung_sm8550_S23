@@ -8,3 +8,4 @@ build.sh
 /KernelSU/
 # Caching
 /.ccache/
+.vscode/settings.json
