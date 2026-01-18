@@ -825,7 +825,7 @@ static int ssam_cplt_init(struct ssam_cplt *cplt, struct device *dev)
 
 	cplt->dev = dev;
 
-	cplt->wq = alloc_workqueue(SSAM_CPLT_WQ_NAME, WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
+	cplt->wq = create_workqueue(SSAM_CPLT_WQ_NAME);
 	if (!cplt->wq)
 		return -ENOMEM;
 
@@ -1354,8 +1354,7 @@ void ssam_controller_destroy(struct ssam_controller *ctrl)
 	if (ctrl->state == SSAM_CONTROLLER_UNINITIALIZED)
 		return;
 
-	WARN_ON(ctrl->state != SSAM_CONTROLLER_STOPPED &&
-		ctrl->state != SSAM_CONTROLLER_INITIALIZED);
+	WARN_ON(ctrl->state != SSAM_CONTROLLER_STOPPED);
 
 	/*
 	 * Note: New events could still have been received after the previous
@@ -1701,10 +1700,8 @@ int ssam_request_sync(struct ssam_controller *ctrl,
 		return status;
 
 	status = ssam_request_sync_init(rqst, spec->flags);
-	if (status) {
-		ssam_request_sync_free(rqst);
+	if (status)
 		return status;
-	}
 
 	ssam_request_sync_set_resp(rqst, rsp);
 

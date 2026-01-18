@@ -59,7 +59,6 @@
 #ifdef CONFIG_PPC64
 #include <asm/hvcall.h>
 #include <asm/paca.h>
-#include <asm/lppaca.h>
 #endif
 
 #include "nonstdio.h"
@@ -1356,7 +1355,7 @@ static int cpu_cmd(void)
 	}
 	termch = cpu;
 
-	if (!scanhex(&cpu) || cpu >= num_possible_cpus()) {
+	if (!scanhex(&cpu)) {
 		/* print cpus waiting or in xmon */
 		printf("cpus stopped:");
 		last_cpu = first_cpu = NR_CPUS;
@@ -1529,9 +1528,9 @@ bpt_cmds(void)
 	cmd = inchar();
 
 	switch (cmd) {
-	case 'd': {	/* bd - hardware data breakpoint */
-		static const char badaddr[] = "Only kernel addresses are permitted for breakpoints\n";
-		int mode;
+	static const char badaddr[] = "Only kernel addresses are permitted for breakpoints\n";
+	int mode;
+	case 'd':	/* bd - hardware data breakpoint */
 		if (xmon_is_ro) {
 			printf(xmon_ro_msg);
 			break;
@@ -1564,7 +1563,6 @@ bpt_cmds(void)
 
 		force_enable_xmon();
 		break;
-	}
 
 	case 'i':	/* bi - hardware instr breakpoint */
 		if (xmon_is_ro) {
@@ -2771,7 +2769,7 @@ static void dump_pacas(void)
 
 	termch = c;	/* Put c back, it wasn't 'a' */
 
-	if (scanhex(&num) && num < num_possible_cpus())
+	if (scanhex(&num))
 		dump_one_paca(num);
 	else
 		dump_one_paca(xmon_owner);
@@ -2844,7 +2842,7 @@ static void dump_xives(void)
 
 	termch = c;	/* Put c back, it wasn't 'a' */
 
-	if (scanhex(&num) && num < num_possible_cpus())
+	if (scanhex(&num))
 		dump_one_xive(num);
 	else
 		dump_one_xive(xmon_owner);

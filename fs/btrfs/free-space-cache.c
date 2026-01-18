@@ -672,12 +672,6 @@ static void recalculate_thresholds(struct btrfs_free_space_ctl *ctl)
 
 	max_bitmaps = max_t(u64, max_bitmaps, 1);
 
-	if (ctl->total_bitmaps > max_bitmaps)
-		btrfs_err(block_group->fs_info,
-"invalid free space control: bg start=%llu len=%llu total_bitmaps=%u unit=%u max_bitmaps=%llu bytes_per_bg=%llu",
-			  block_group->start, block_group->length,
-			  ctl->total_bitmaps, ctl->unit, max_bitmaps,
-			  bytes_per_bg);
 	ASSERT(ctl->total_bitmaps <= max_bitmaps);
 
 	/*
@@ -825,17 +819,15 @@ static int __load_free_space_cache(struct btrfs_root *root, struct inode *inode,
 			}
 			spin_lock(&ctl->tree_lock);
 			ret = link_free_space(ctl, e);
-			if (ret) {
-				spin_unlock(&ctl->tree_lock);
-				btrfs_err(fs_info,
-					"Duplicate entries in free space cache, dumping");
-				kmem_cache_free(btrfs_free_space_bitmap_cachep, e->bitmap);
-				kmem_cache_free(btrfs_free_space_cachep, e);
-				goto free_cache;
-			}
 			ctl->total_bitmaps++;
 			recalculate_thresholds(ctl);
 			spin_unlock(&ctl->tree_lock);
+			if (ret) {
+				btrfs_err(fs_info,
+					"Duplicate entries in free space cache, dumping");
+				kmem_cache_free(btrfs_free_space_cachep, e);
+				goto free_cache;
+			}
 			list_add_tail(&e->list, &bitmaps);
 		}
 
@@ -1787,9 +1779,9 @@ static void bitmap_clear_bits(struct btrfs_free_space_ctl *ctl,
 	ctl->free_space -= bytes;
 }
 
-static void btrfs_bitmap_set_bits(struct btrfs_free_space_ctl *ctl,
-				  struct btrfs_free_space *info, u64 offset,
-				  u64 bytes)
+static void bitmap_set_bits(struct btrfs_free_space_ctl *ctl,
+			    struct btrfs_free_space *info, u64 offset,
+			    u64 bytes)
 {
 	unsigned long start, count, end;
 	int extent_delta = 1;
@@ -2085,7 +2077,7 @@ static u64 add_bytes_to_bitmap(struct btrfs_free_space_ctl *ctl,
 
 	bytes_to_set = min(end - offset, bytes);
 
-	btrfs_bitmap_set_bits(ctl, info, offset, bytes_to_set);
+	bitmap_set_bits(ctl, info, offset, bytes_to_set);
 
 	/*
 	 * We set some bytes, we have no idea what the max extent size is

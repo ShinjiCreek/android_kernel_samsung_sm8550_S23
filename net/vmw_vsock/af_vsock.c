@@ -113,14 +113,12 @@
 static int __vsock_bind(struct sock *sk, struct sockaddr_vm *addr);
 static void vsock_sk_destruct(struct sock *sk);
 static int vsock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb);
-static void vsock_close(struct sock *sk, long timeout);
 
 /* Protocol family. */
 static struct proto vsock_proto = {
 	.name = "AF_VSOCK",
 	.owner = THIS_MODULE,
 	.obj_size = sizeof(struct vsock_sock),
-	.close = vsock_close,
 };
 
 /* The default peer timeout indicates how long we will wait for a peer response
@@ -330,10 +328,7 @@ EXPORT_SYMBOL_GPL(vsock_find_connected_socket);
 
 void vsock_remove_sock(struct vsock_sock *vsk)
 {
-	/* Transport reassignment must not remove the binding. */
-	if (sock_flag(sk_vsock(vsk), SOCK_DEAD))
-		vsock_remove_bound(vsk);
-
+	vsock_remove_bound(vsk);
 	vsock_remove_connected(vsk);
 }
 EXPORT_SYMBOL_GPL(vsock_remove_sock);
@@ -482,15 +477,6 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 		 */
 		vsk->transport->release(vsk);
 		vsock_deassign_transport(vsk);
-
-		/* transport's release() and destruct() can touch some socket
-		 * state, since we are reassigning the socket to a new transport
-		 * during vsock_connect(), let's reset these fields to have a
-		 * clean state.
-		 */
-		sock_reset_flag(sk, SOCK_DONE);
-		sk->sk_state = TCP_CLOSE;
-		vsk->peer_shutdown = 0;
 	}
 
 	/* We increase the module refcnt to prevent the transport unloading
@@ -800,44 +786,39 @@ static bool sock_type_connectible(u16 type)
 
 static void __vsock_release(struct sock *sk, int level)
 {
-	struct vsock_sock *vsk;
-	struct sock *pending;
+	if (sk) {
+		struct sock *pending;
+		struct vsock_sock *vsk;
 
-	vsk = vsock_sk(sk);
-	pending = NULL;	/* Compiler warning. */
+		vsk = vsock_sk(sk);
+		pending = NULL;	/* Compiler warning. */
 
-	/* When "level" is SINGLE_DEPTH_NESTING, use the nested
-	 * version to avoid the warning "possible recursive locking
-	 * detected". When "level" is 0, lock_sock_nested(sk, level)
-	 * is the same as lock_sock(sk).
-	 */
-	lock_sock_nested(sk, level);
+		/* When "level" is SINGLE_DEPTH_NESTING, use the nested
+		 * version to avoid the warning "possible recursive locking
+		 * detected". When "level" is 0, lock_sock_nested(sk, level)
+		 * is the same as lock_sock(sk).
+		 */
+		lock_sock_nested(sk, level);
 
-	/* Indicate to vsock_remove_sock() that the socket is being released and
-	 * can be removed from the bound_table. Unlike transport reassignment
-	 * case, where the socket must remain bound despite vsock_remove_sock()
-	 * being called from the transport release() callback.
-	 */
-	sock_set_flag(sk, SOCK_DEAD);
+		if (vsk->transport)
+			vsk->transport->release(vsk);
+		else if (sock_type_connectible(sk->sk_type))
+			vsock_remove_sock(vsk);
 
-	if (vsk->transport)
-		vsk->transport->release(vsk);
-	else if (sock_type_connectible(sk->sk_type))
-		vsock_remove_sock(vsk);
+		sock_orphan(sk);
+		sk->sk_shutdown = SHUTDOWN_MASK;
 
-	sock_orphan(sk);
-	sk->sk_shutdown = SHUTDOWN_MASK;
+		skb_queue_purge(&sk->sk_receive_queue);
 
-	skb_queue_purge(&sk->sk_receive_queue);
+		/* Clean up any sockets that never were accepted. */
+		while ((pending = vsock_dequeue_accept(sk)) != NULL) {
+			__vsock_release(pending, SINGLE_DEPTH_NESTING);
+			sock_put(pending);
+		}
 
-	/* Clean up any sockets that never were accepted. */
-	while ((pending = vsock_dequeue_accept(sk)) != NULL) {
-		__vsock_release(pending, SINGLE_DEPTH_NESTING);
-		sock_put(pending);
+		release_sock(sk);
+		sock_put(sk);
 	}
-
-	release_sock(sk);
-	sock_put(sk);
 }
 
 static void vsock_sk_destruct(struct sock *sk)
@@ -875,9 +856,6 @@ EXPORT_SYMBOL_GPL(vsock_create_connected);
 
 s64 vsock_stream_has_data(struct vsock_sock *vsk)
 {
-	if (WARN_ON(!vsk->transport))
-		return 0;
-
 	return vsk->transport->stream_has_data(vsk);
 }
 EXPORT_SYMBOL_GPL(vsock_stream_has_data);
@@ -885,9 +863,6 @@ EXPORT_SYMBOL_GPL(vsock_stream_has_data);
 static s64 vsock_connectible_has_data(struct vsock_sock *vsk)
 {
 	struct sock *sk = sk_vsock(vsk);
-
-	if (WARN_ON(!vsk->transport))
-		return 0;
 
 	if (sk->sk_type == SOCK_SEQPACKET)
 		return vsk->transport->seqpacket_has_data(vsk);
@@ -897,29 +872,13 @@ static s64 vsock_connectible_has_data(struct vsock_sock *vsk)
 
 s64 vsock_stream_has_space(struct vsock_sock *vsk)
 {
-	if (WARN_ON(!vsk->transport))
-		return 0;
-
 	return vsk->transport->stream_has_space(vsk);
 }
 EXPORT_SYMBOL_GPL(vsock_stream_has_space);
 
-/* Dummy callback required by sockmap.
- * See unconditional call of saved_close() in sock_map_close().
- */
-static void vsock_close(struct sock *sk, long timeout)
-{
-}
-
 static int vsock_release(struct socket *sock)
 {
-	struct sock *sk = sock->sk;
-
-	if (!sk)
-		return 0;
-
-	sk->sk_prot->close(sk, 0);
-	__vsock_release(sk, 0);
+	__vsock_release(sock->sk, 0);
 	sock->sk = NULL;
 	sock->state = SS_FREE;
 
@@ -1321,7 +1280,6 @@ static void vsock_connect_timeout(struct work_struct *work)
 	if (sk->sk_state == TCP_SYN_SENT &&
 	    (sk->sk_shutdown != SHUTDOWN_MASK)) {
 		sk->sk_state = TCP_CLOSE;
-		sk->sk_socket->state = SS_UNCONNECTED;
 		sk->sk_err = ETIMEDOUT;
 		sk_error_report(sk);
 		vsock_transport_cancel_pkt(vsk);
@@ -1427,14 +1385,7 @@ static int vsock_connect(struct socket *sock, struct sockaddr *addr,
 			 * timeout fires.
 			 */
 			sock_hold(sk);
-
-			/* If the timeout function is already scheduled,
-			 * reschedule it, then ungrab the socket refcount to
-			 * keep it balanced.
-			 */
-			if (mod_delayed_work(system_wq, &vsk->connect_work,
-					     timeout))
-				sock_put(sk);
+			schedule_delayed_work(&vsk->connect_work, timeout);
 
 			/* Skip ahead to preserve error code set above. */
 			goto out_wait;
@@ -1451,7 +1402,7 @@ static int vsock_connect(struct socket *sock, struct sockaddr *addr,
 			vsock_transport_cancel_pkt(vsk);
 			vsock_remove_connected(vsk);
 			goto out_wait;
-		} else if ((sk->sk_state != TCP_ESTABLISHED) && (timeout == 0)) {
+		} else if (timeout == 0) {
 			err = -ETIMEDOUT;
 			sk->sk_state = TCP_CLOSE;
 			sock->state = SS_UNCONNECTED;
@@ -1933,11 +1884,8 @@ static int vsock_connectible_wait_data(struct sock *sk,
 	err = 0;
 	transport = vsk->transport;
 
-	while (1) {
+	while ((data = vsock_connectible_has_data(vsk)) == 0) {
 		prepare_to_wait(sk_sleep(sk), wait, TASK_INTERRUPTIBLE);
-		data = vsock_connectible_has_data(vsk);
-		if (data != 0)
-			break;
 
 		if (sk->sk_err != 0 ||
 		    (sk->sk_shutdown & RCV_SHUTDOWN) ||

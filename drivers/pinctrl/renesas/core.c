@@ -71,11 +71,12 @@ static int sh_pfc_map_resources(struct sh_pfc *pfc,
 
 	/* Fill them. */
 	for (i = 0; i < num_windows; i++) {
-		windows->virt = devm_platform_get_and_ioremap_resource(pdev, i, &res);
-		if (IS_ERR(windows->virt))
-			return -ENOMEM;
+		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
 		windows->phys = res->start;
 		windows->size = resource_size(res);
+		windows->virt = devm_ioremap_resource(pfc->dev, res);
+		if (IS_ERR(windows->virt))
+			return -ENOMEM;
 		windows++;
 	}
 	for (i = 0; i < num_irqs; i++)
@@ -868,11 +869,9 @@ static void __init sh_pfc_check_cfg_reg(const char *drvname,
 		sh_pfc_err("reg 0x%x: var_field_width declares %u instead of %u bits\n",
 			   cfg_reg->reg, rw, cfg_reg->reg_width);
 
-	if (n != cfg_reg->nr_enum_ids) {
+	if (n != cfg_reg->nr_enum_ids)
 		sh_pfc_err("reg 0x%x: enum_ids[] has %u instead of %u values\n",
 			   cfg_reg->reg, cfg_reg->nr_enum_ids, n);
-		n = cfg_reg->nr_enum_ids;
-	}
 
 check_enum_ids:
 	sh_pfc_check_reg_enums(drvname, cfg_reg->reg, cfg_reg->enum_ids, n);

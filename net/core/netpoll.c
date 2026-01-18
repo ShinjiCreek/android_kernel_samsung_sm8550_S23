@@ -137,20 +137,6 @@ static void queue_process(struct work_struct *work)
 	}
 }
 
-static int netif_local_xmit_active(struct net_device *dev)
-{
-	int i;
-
-	for (i = 0; i < dev->num_tx_queues; i++) {
-		struct netdev_queue *txq = netdev_get_tx_queue(dev, i);
-
-		if (READ_ONCE(txq->xmit_lock_owner) == smp_processor_id())
-			return 1;
-	}
-
-	return 0;
-}
-
 static void poll_one_napi(struct napi_struct *napi)
 {
 	int work;
@@ -197,10 +183,7 @@ void netpoll_poll_dev(struct net_device *dev)
 	if (!ni || down_trylock(&ni->dev_lock))
 		return;
 
-	/* Some drivers will take the same locks in poll and xmit,
-	 * we can't poll if local CPU is already in xmit.
-	 */
-	if (!netif_running(dev) || netif_local_xmit_active(dev)) {
+	if (!netif_running(dev)) {
 		up(&ni->dev_lock);
 		return;
 	}
@@ -316,7 +299,7 @@ static int netpoll_owner_active(struct net_device *dev)
 	struct napi_struct *napi;
 
 	list_for_each_entry_rcu(napi, &dev->napi_list, dev_list) {
-		if (READ_ONCE(napi->poll_owner) == smp_processor_id())
+		if (napi->poll_owner == smp_processor_id())
 			return 1;
 	}
 	return 0;
@@ -573,7 +556,7 @@ int netpoll_parse_options(struct netpoll *np, char *opt)
 		if ((delim = strchr(cur, ',')) == NULL)
 			goto parse_failed;
 		*delim = 0;
-		strscpy(np->dev_name, cur, sizeof(np->dev_name));
+		strlcpy(np->dev_name, cur, sizeof(np->dev_name));
 		cur = delim;
 	}
 	cur++;
@@ -627,7 +610,7 @@ int __netpoll_setup(struct netpoll *np, struct net_device *ndev)
 	int err;
 
 	np->dev = ndev;
-	strscpy(np->dev_name, ndev->name, IFNAMSIZ);
+	strlcpy(np->dev_name, ndev->name, IFNAMSIZ);
 
 	if (ndev->priv_flags & IFF_DISABLE_NETPOLL) {
 		np_err(np, "%s doesn't support polling, aborting\n",
@@ -636,7 +619,7 @@ int __netpoll_setup(struct netpoll *np, struct net_device *ndev)
 		goto out;
 	}
 
-	if (!rcu_access_pointer(ndev->npinfo)) {
+	if (!ndev->npinfo) {
 		npinfo = kmalloc(sizeof(*npinfo), GFP_KERNEL);
 		if (!npinfo) {
 			err = -ENOMEM;

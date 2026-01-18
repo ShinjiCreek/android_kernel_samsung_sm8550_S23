@@ -350,26 +350,27 @@ static void ioapic_mask_entry(int apic, int pin)
  * shared ISA-space IRQs, so we have to support them. We are super
  * fast in the common case, and fast for shared ISA-space IRQs.
  */
-static bool add_pin_to_irq_node(struct mp_chip_data *data, int node, int apic, int pin)
+static int __add_pin_to_irq_node(struct mp_chip_data *data,
+				 int node, int apic, int pin)
 {
 	struct irq_pin_list *entry;
 
-	/* Don't allow duplicates */
-	for_each_irq_pin(entry, data->irq_2_pin) {
+	/* don't allow duplicates */
+	for_each_irq_pin(entry, data->irq_2_pin)
 		if (entry->apic == apic && entry->pin == pin)
-			return true;
-	}
+			return 0;
 
 	entry = kzalloc_node(sizeof(struct irq_pin_list), GFP_ATOMIC, node);
 	if (!entry) {
-		pr_err("Cannot allocate irq_pin_list (%d,%d,%d)\n", node, apic, pin);
-		return false;
+		pr_err("can not alloc irq_pin_list (%d,%d,%d)\n",
+		       node, apic, pin);
+		return -ENOMEM;
 	}
-
 	entry->apic = apic;
 	entry->pin = pin;
 	list_add_tail(&entry->list, &data->irq_2_pin);
-	return true;
+
+	return 0;
 }
 
 static void __remove_pin_from_irq(struct mp_chip_data *data, int apic, int pin)
@@ -382,6 +383,13 @@ static void __remove_pin_from_irq(struct mp_chip_data *data, int apic, int pin)
 			kfree(entry);
 			return;
 		}
+}
+
+static void add_pin_to_irq_node(struct mp_chip_data *data,
+				int node, int apic, int pin)
+{
+	if (__add_pin_to_irq_node(data, node, apic, pin))
+		panic("IO-APIC: failed to add irq-pin. Can not proceed\n");
 }
 
 /*
@@ -992,7 +1000,8 @@ static int alloc_isa_irq_from_domain(struct irq_domain *domain,
 	if (irq_data && irq_data->parent_data) {
 		if (!mp_check_pin_attr(irq, info))
 			return -EBUSY;
-		if (!add_pin_to_irq_node(irq_data->chip_data, node, ioapic, info->ioapic.pin))
+		if (__add_pin_to_irq_node(irq_data->chip_data, node, ioapic,
+					  info->ioapic.pin))
 			return -ENOMEM;
 	} else {
 		info->flags |= X86_IRQ_ALLOC_LEGACY;
@@ -2470,21 +2479,17 @@ static int io_apic_get_redir_entries(int ioapic)
 
 unsigned int arch_dynirq_lower_bound(unsigned int from)
 {
-	unsigned int ret;
-
 	/*
 	 * dmar_alloc_hwirq() may be called before setup_IO_APIC(), so use
 	 * gsi_top if ioapic_dynirq_base hasn't been initialized yet.
 	 */
-	ret = ioapic_dynirq_base ? : gsi_top;
-
+	if (!ioapic_initialized)
+		return gsi_top;
 	/*
-	 * For DT enabled machines ioapic_dynirq_base is irrelevant and
-	 * always 0. gsi_top can be 0 if there is no IO/APIC registered.
-	 * 0 is an invalid interrupt number for dynamic allocations. Return
-	 * @from instead.
+	 * For DT enabled machines ioapic_dynirq_base is irrelevant and not
+	 * updated. So simply return @from if ioapic_dynirq_base == 0.
 	 */
-	return ret ? : from;
+	return ioapic_dynirq_base ? : from;
 }
 
 #ifdef CONFIG_X86_32
@@ -3015,8 +3020,10 @@ int mp_irqdomain_alloc(struct irq_domain *domain, unsigned int virq,
 		return -ENOMEM;
 
 	ret = irq_domain_alloc_irqs_parent(domain, virq, nr_irqs, info);
-	if (ret < 0)
-		goto free_data;
+	if (ret < 0) {
+		kfree(data);
+		return ret;
+	}
 
 	INIT_LIST_HEAD(&data->irq_2_pin);
 	irq_data->hwirq = info->ioapic.pin;
@@ -3025,10 +3032,7 @@ int mp_irqdomain_alloc(struct irq_domain *domain, unsigned int virq,
 	irq_data->chip_data = data;
 	mp_irqdomain_get_attr(mp_pin_to_gsi(ioapic, pin), data, info);
 
-	if (!add_pin_to_irq_node(data, ioapic_alloc_attr_node(info), ioapic, pin)) {
-		ret = -ENOMEM;
-		goto free_irqs;
-	}
+	add_pin_to_irq_node(data, ioapic_alloc_attr_node(info), ioapic, pin);
 
 	mp_preconfigure_entry(data);
 	mp_register_handler(virq, data->is_level);
@@ -3043,12 +3047,6 @@ int mp_irqdomain_alloc(struct irq_domain *domain, unsigned int virq,
 		    ioapic, mpc_ioapic_id(ioapic), pin, virq,
 		    data->is_level, data->active_low);
 	return 0;
-
-free_irqs:
-	irq_domain_free_irqs_parent(domain, virq, nr_irqs);
-free_data:
-	kfree(data);
-	return ret;
 }
 
 void mp_irqdomain_free(struct irq_domain *domain, unsigned int virq,

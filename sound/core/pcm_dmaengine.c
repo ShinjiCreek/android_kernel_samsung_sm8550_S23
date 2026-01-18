@@ -132,14 +132,12 @@ EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_set_config_from_dai_data);
 
 static void dmaengine_pcm_dma_complete(void *arg)
 {
-	unsigned int new_pos;
 	struct snd_pcm_substream *substream = arg;
 	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
 
-	new_pos = prtd->pos + snd_pcm_lib_period_bytes(substream);
-	if (new_pos >= snd_pcm_lib_buffer_bytes(substream))
-		new_pos = 0;
-	prtd->pos = new_pos;
+	prtd->pos += snd_pcm_lib_period_bytes(substream);
+	if (prtd->pos >= snd_pcm_lib_buffer_bytes(substream))
+		prtd->pos = 0;
 
 	snd_pcm_period_elapsed(substream);
 }
@@ -344,20 +342,6 @@ int snd_dmaengine_pcm_open_request_chan(struct snd_pcm_substream *substream,
 }
 EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_open_request_chan);
 
-int snd_dmaengine_pcm_sync_stop(struct snd_pcm_substream *substream)
-{
-	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
-	struct dma_tx_state state;
-	enum dma_status status;
-
-	status = dmaengine_tx_status(prtd->dma_chan, prtd->cookie, &state);
-	if (status != DMA_PAUSED)
-		dmaengine_synchronize(prtd->dma_chan);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_sync_stop);
-
 /**
  * snd_dmaengine_pcm_close - Close a dmaengine based PCM substream
  * @substream: PCM substream
@@ -365,12 +349,6 @@ EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_sync_stop);
 int snd_dmaengine_pcm_close(struct snd_pcm_substream *substream)
 {
 	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
-	struct dma_tx_state state;
-	enum dma_status status;
-
-	status = dmaengine_tx_status(prtd->dma_chan, prtd->cookie, &state);
-	if (status == DMA_PAUSED)
-		dmaengine_terminate_async(prtd->dma_chan);
 
 	dmaengine_synchronize(prtd->dma_chan);
 	kfree(prtd);
@@ -389,12 +367,6 @@ EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_close);
 int snd_dmaengine_pcm_close_release_chan(struct snd_pcm_substream *substream)
 {
 	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
-	struct dma_tx_state state;
-	enum dma_status status;
-
-	status = dmaengine_tx_status(prtd->dma_chan, prtd->cookie, &state);
-	if (status == DMA_PAUSED)
-		dmaengine_terminate_async(prtd->dma_chan);
 
 	dmaengine_synchronize(prtd->dma_chan);
 	dma_release_channel(prtd->dma_chan);

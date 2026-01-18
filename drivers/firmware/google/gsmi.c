@@ -361,10 +361,9 @@ static efi_status_t gsmi_get_variable(efi_char16_t *name,
 		memcpy(data, gsmi_dev.data_buf->start, *data_size);
 
 		/* All variables are have the following attributes */
-		if (attr)
-			*attr = EFI_VARIABLE_NON_VOLATILE |
-				EFI_VARIABLE_BOOTSERVICE_ACCESS |
-				EFI_VARIABLE_RUNTIME_ACCESS;
+		*attr = EFI_VARIABLE_NON_VOLATILE |
+			EFI_VARIABLE_BOOTSERVICE_ACCESS |
+			EFI_VARIABLE_RUNTIME_ACCESS;
 	}
 
 	spin_unlock_irqrestore(&gsmi_dev.lock, flags);
@@ -682,15 +681,6 @@ static struct notifier_block gsmi_die_notifier = {
 static int gsmi_panic_callback(struct notifier_block *nb,
 			       unsigned long reason, void *arg)
 {
-
-	/*
-	 * Panic callbacks are executed with all other CPUs stopped,
-	 * so we must not attempt to spin waiting for gsmi_dev.lock
-	 * to be released.
-	 */
-	if (spin_is_locked(&gsmi_dev.lock))
-		return NOTIFY_DONE;
-
 	gsmi_shutdown_reason(GSMI_SHUTDOWN_PANIC);
 	return NOTIFY_DONE;
 }
@@ -918,8 +908,7 @@ static __init int gsmi_init(void)
 	gsmi_dev.pdev = platform_device_register_full(&gsmi_dev_info);
 	if (IS_ERR(gsmi_dev.pdev)) {
 		printk(KERN_ERR "gsmi: unable to register platform device\n");
-		ret = PTR_ERR(gsmi_dev.pdev);
-		goto out_unregister;
+		return PTR_ERR(gsmi_dev.pdev);
 	}
 
 	/* SMI access needs to be serialized */
@@ -1057,11 +1046,10 @@ out_err:
 	gsmi_buf_free(gsmi_dev.name_buf);
 	kmem_cache_destroy(gsmi_dev.mem_pool);
 	platform_device_unregister(gsmi_dev.pdev);
-out_unregister:
+	pr_info("gsmi: failed to load: %d\n", ret);
 #ifdef CONFIG_PM
 	platform_driver_unregister(&gsmi_driver_info);
 #endif
-	pr_info("gsmi: failed to load: %d\n", ret);
 	return ret;
 }
 

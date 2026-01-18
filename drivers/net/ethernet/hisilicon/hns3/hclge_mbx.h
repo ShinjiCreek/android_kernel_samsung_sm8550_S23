@@ -46,7 +46,6 @@ enum HCLGE_MBX_OPCODE {
 	HCLGE_MBX_PUSH_PROMISC_INFO,	/* (PF -> VF) push vf promisc info */
 	HCLGE_MBX_VF_UNINIT,            /* (VF -> PF) vf is unintializing */
 	HCLGE_MBX_HANDLE_VF_TBL,	/* (VF -> PF) store/clear hw table */
-	HCLGE_MBX_GET_RING_VECTOR_MAP,	/* (VF -> PF) get ring-to-vector map */
 
 	HCLGE_MBX_GET_VF_FLR_STATUS = 200, /* (M7 -> PF) get vf flr status */
 	HCLGE_MBX_PUSH_LINK_STATUS,	/* (M7 -> PF) get port link status */
@@ -80,9 +79,6 @@ enum hclge_mbx_tbl_cfg_subcode {
 #define HCLGE_MBX_MAX_MSG_SIZE	14
 #define HCLGE_MBX_MAX_RESP_DATA_SIZE	8U
 #define HCLGE_MBX_MAX_RING_CHAIN_PARAM_NUM	4
-
-#define HCLGE_RESET_SCHED_TIMEOUT	(3 * HZ)
-#define HCLGE_MBX_SCHED_TIMEOUT	(HZ / 2)
 
 struct hclge_ring_chain_param {
 	u8 ring_type;
@@ -135,20 +131,11 @@ struct hclge_vf_to_pf_msg {
 };
 
 struct hclge_pf_to_vf_msg {
-	__le16 code;
-	union {
-		/* used for mbx response */
-		struct {
-			__le16 vf_mbx_msg_code;
-			__le16 vf_mbx_msg_subcode;
-			__le16 resp_status;
-			u8 resp_data[HCLGE_MBX_MAX_RESP_DATA_SIZE];
-		};
-		/* used for general mbx */
-		struct {
-			u8 msg_data[HCLGE_MBX_MAX_MSG_SIZE];
-		};
-	};
+	u16 code;
+	u16 vf_mbx_msg_code;
+	u16 vf_mbx_msg_subcode;
+	u16 resp_status;
+	u8 resp_data[HCLGE_MBX_MAX_RESP_DATA_SIZE];
 };
 
 struct hclge_mbx_vf_to_pf_cmd {
@@ -158,7 +145,7 @@ struct hclge_mbx_vf_to_pf_cmd {
 	u8 rsv1[1];
 	u8 msg_len;
 	u8 rsv2;
-	__le16 match_id;
+	u16 match_id;
 	struct hclge_vf_to_pf_msg msg;
 };
 
@@ -169,7 +156,7 @@ struct hclge_mbx_pf_to_vf_cmd {
 	u8 rsv[3];
 	u8 msg_len;
 	u8 rsv1;
-	__le16 match_id;
+	u16 match_id;
 	struct hclge_pf_to_vf_msg msg;
 };
 
@@ -179,28 +166,6 @@ struct hclge_vf_rst_cmd {
 	u8 rsv[22];
 };
 
-#pragma pack(1)
-struct hclge_mbx_link_status {
-	__le16 link_status;
-	__le32 speed;
-	__le16 duplex;
-	u8 flag;
-};
-
-struct hclge_mbx_link_mode {
-	__le16 idx;
-	__le64 link_mode;
-};
-
-struct hclge_mbx_port_base_vlan {
-	__le16 state;
-	__le16 vlan_proto;
-	__le16 qos;
-	__le16 vlan_tag;
-};
-
-#pragma pack()
-
 /* used by VF to store the received Async responses from PF */
 struct hclgevf_mbx_arq_ring {
 #define HCLGE_MBX_MAX_ARQ_MSG_SIZE	8
@@ -209,19 +174,8 @@ struct hclgevf_mbx_arq_ring {
 	u32 head;
 	u32 tail;
 	atomic_t count;
-	__le16 msg_q[HCLGE_MBX_MAX_ARQ_MSG_NUM][HCLGE_MBX_MAX_ARQ_MSG_SIZE];
+	u16 msg_q[HCLGE_MBX_MAX_ARQ_MSG_NUM][HCLGE_MBX_MAX_ARQ_MSG_SIZE];
 };
-
-struct hclge_dev;
-
-#define HCLGE_MBX_OPCODE_MAX 256
-struct hclge_mbx_ops_param {
-	struct hclge_vport *vport;
-	struct hclge_mbx_vf_to_pf_cmd *req;
-	struct hclge_respond_to_vf_msg *resp_msg;
-};
-
-typedef int (*hclge_mbx_ops_fn)(struct hclge_mbx_ops_param *param);
 
 #define hclge_mbx_ring_ptr_move_crq(crq) \
 	(crq->next_to_use = (crq->next_to_use + 1) % crq->desc_num)

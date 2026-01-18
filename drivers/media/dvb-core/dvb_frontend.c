@@ -136,7 +136,7 @@ static void __dvb_frontend_free(struct dvb_frontend *fe)
 	struct dvb_frontend_private *fepriv = fe->frontend_priv;
 
 	if (fepriv)
-		dvb_device_put(fepriv->dvbdev);
+		dvb_free_device(fepriv->dvbdev);
 
 	dvb_frontend_invoke_release(fe, fe->ops.release);
 
@@ -293,22 +293,14 @@ static int dvb_frontend_get_event(struct dvb_frontend *fe,
 	}
 
 	if (events->eventw == events->eventr) {
-		struct wait_queue_entry wait;
-		int ret = 0;
+		int ret;
 
 		if (flags & O_NONBLOCK)
 			return -EWOULDBLOCK;
 
-		init_waitqueue_entry(&wait, current);
-		add_wait_queue(&events->wait_queue, &wait);
-		while (!dvb_frontend_test_event(fepriv, events)) {
-			wait_woken(&wait, TASK_INTERRUPTIBLE, 0);
-			if (signal_pending(current)) {
-				ret = -ERESTARTSYS;
-				break;
-			}
-		}
-		remove_wait_queue(&events->wait_queue, &wait);
+		ret = wait_event_interruptible(events->wait_queue,
+					       dvb_frontend_test_event(fepriv, events));
+
 		if (ret < 0)
 			return ret;
 	}
@@ -443,8 +435,8 @@ static int dvb_frontend_swzigzag_autotune(struct dvb_frontend *fe, int check_wra
 
 		default:
 			fepriv->auto_step++;
-			fepriv->auto_sub_step = 0;
-			continue;
+			fepriv->auto_sub_step = -1; /* it'll be incremented to 0 in a moment */
+			break;
 		}
 
 		if (!ready) fepriv->auto_sub_step++;
@@ -2160,8 +2152,7 @@ static int dvb_frontend_handle_compat_ioctl(struct file *file, unsigned int cmd,
 		if (!tvps->num || (tvps->num > DTV_IOCTL_MAX_MSGS))
 			return -EINVAL;
 
-		tvp = memdup_array_user(compat_ptr(tvps->props),
-					tvps->num, sizeof(*tvp));
+		tvp = memdup_user(compat_ptr(tvps->props), tvps->num * sizeof(*tvp));
 		if (IS_ERR(tvp))
 			return PTR_ERR(tvp);
 
@@ -2192,8 +2183,7 @@ static int dvb_frontend_handle_compat_ioctl(struct file *file, unsigned int cmd,
 		if (!tvps->num || (tvps->num > DTV_IOCTL_MAX_MSGS))
 			return -EINVAL;
 
-		tvp = memdup_array_user(compat_ptr(tvps->props),
-					tvps->num, sizeof(*tvp));
+		tvp = memdup_user(compat_ptr(tvps->props), tvps->num * sizeof(*tvp));
 		if (IS_ERR(tvp))
 			return PTR_ERR(tvp);
 
@@ -2370,8 +2360,7 @@ static int dvb_get_property(struct dvb_frontend *fe, struct file *file,
 	if (!tvps->num || tvps->num > DTV_IOCTL_MAX_MSGS)
 		return -EINVAL;
 
-	tvp = memdup_array_user((void __user *)tvps->props,
-				tvps->num, sizeof(*tvp));
+	tvp = memdup_user((void __user *)tvps->props, tvps->num * sizeof(*tvp));
 	if (IS_ERR(tvp))
 		return PTR_ERR(tvp);
 
@@ -2449,8 +2438,7 @@ static int dvb_frontend_handle_ioctl(struct file *file,
 		if (!tvps->num || (tvps->num > DTV_IOCTL_MAX_MSGS))
 			return -EINVAL;
 
-		tvp = memdup_array_user((void __user *)tvps->props,
-					tvps->num, sizeof(*tvp));
+		tvp = memdup_user((void __user *)tvps->props, tvps->num * sizeof(*tvp));
 		if (IS_ERR(tvp))
 			return PTR_ERR(tvp);
 
@@ -2997,7 +2985,6 @@ int dvb_register_frontend(struct dvb_adapter *dvb,
 		.name = fe->ops.info.name,
 #endif
 	};
-	int ret;
 
 	dev_dbg(dvb->device, "%s:\n", __func__);
 
@@ -3031,13 +3018,8 @@ int dvb_register_frontend(struct dvb_adapter *dvb,
 		 "DVB: registering adapter %i frontend %i (%s)...\n",
 		 fe->dvb->num, fe->id, fe->ops.info.name);
 
-	ret = dvb_register_device(fe->dvb, &fepriv->dvbdev, &dvbdev_template,
+	dvb_register_device(fe->dvb, &fepriv->dvbdev, &dvbdev_template,
 			    fe, DVB_DEVICE_FRONTEND, 0);
-	if (ret) {
-		dvb_frontend_put(fe);
-		mutex_unlock(&frontend_mutex);
-		return ret;
-	}
 
 	/*
 	 * Initialize the cache to the proper values according with the

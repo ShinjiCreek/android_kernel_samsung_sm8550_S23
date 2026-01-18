@@ -447,11 +447,8 @@ void debug_dma_dump_mappings(struct device *dev)
  * dma_active_cacheline entry to track per event.  dma_map_sg(), on the
  * other hand, consumes a single dma_debug_entry, but inserts 'nents'
  * entries into the tree.
- *
- * Use __GFP_NOWARN because the printk from an OOM, to netconsole, could end
- * up right back in the DMA debugging code, leading to a deadlock.
  */
-static RADIX_TREE(dma_active_cacheline, GFP_ATOMIC | __GFP_NOWARN);
+static RADIX_TREE(dma_active_cacheline, GFP_NOWAIT);
 static DEFINE_SPINLOCK(radix_lock);
 #define ACTIVE_CACHELINE_MAX_OVERLAP ((1 << RADIX_TREE_MAX_TAGS) - 1)
 #define CACHELINE_PER_PAGE_SHIFT (PAGE_SHIFT - L1_CACHE_SHIFT)
@@ -567,7 +564,7 @@ static void add_dma_entry(struct dma_debug_entry *entry, unsigned long attrs)
 
 	rc = active_cacheline_insert(entry);
 	if (rc == -ENOMEM) {
-		pr_err_once("cacheline tracking ENOMEM, dma-debug disabled\n");
+		pr_err("cacheline tracking ENOMEM, dma-debug disabled\n");
 		global_disable = true;
 	} else if (rc == -EEXIST && !(attrs & DMA_ATTR_SKIP_CPU_SYNC)) {
 		err_printk(entry->dev, entry,
@@ -608,19 +605,15 @@ static struct dma_debug_entry *__dma_entry_alloc(void)
 	return entry;
 }
 
-/*
- * This should be called outside of free_entries_lock scope to avoid potential
- * deadlocks with serial consoles that use DMA.
- */
-static void __dma_entry_alloc_check_leak(u32 nr_entries)
+static void __dma_entry_alloc_check_leak(void)
 {
-	u32 tmp = nr_entries % nr_prealloc_entries;
+	u32 tmp = nr_total_entries % nr_prealloc_entries;
 
 	/* Shout each time we tick over some multiple of the initial pool */
 	if (tmp < DMA_DEBUG_DYNAMIC_ENTRIES) {
 		pr_info("dma_debug_entry pool grown to %u (%u00%%)\n",
-			nr_entries,
-			(nr_entries / nr_prealloc_entries));
+			nr_total_entries,
+			(nr_total_entries / nr_prealloc_entries));
 	}
 }
 
@@ -631,10 +624,8 @@ static void __dma_entry_alloc_check_leak(u32 nr_entries)
  */
 static struct dma_debug_entry *dma_entry_alloc(void)
 {
-	bool alloc_check_leak = false;
 	struct dma_debug_entry *entry;
 	unsigned long flags;
-	u32 nr_entries;
 
 	spin_lock_irqsave(&free_entries_lock, flags);
 	if (num_free_entries == 0) {
@@ -644,16 +635,12 @@ static struct dma_debug_entry *dma_entry_alloc(void)
 			pr_err("debugging out of memory - disabling\n");
 			return NULL;
 		}
-		alloc_check_leak = true;
-		nr_entries = nr_total_entries;
+		__dma_entry_alloc_check_leak();
 	}
 
 	entry = __dma_entry_alloc();
 
 	spin_unlock_irqrestore(&free_entries_lock, flags);
-
-	if (alloc_check_leak)
-		__dma_entry_alloc_check_leak(nr_entries);
 
 #ifdef CONFIG_STACKTRACE
 	entry->stack_len = stack_trace_save(entry->stack_entries,
@@ -1046,13 +1033,9 @@ static void check_unmap(struct dma_debug_entry *ref)
 	}
 
 	hash_bucket_del(entry);
-	put_hash_bucket(bucket, flags);
-
-	/*
-	 * Free the entry outside of bucket_lock to avoid ABBA deadlocks
-	 * between that and radix_lock.
-	 */
 	dma_entry_free(entry);
+
+	put_hash_bucket(bucket, flags);
 }
 
 static void check_for_stack(struct device *dev,

@@ -145,8 +145,6 @@ bool v4l2_valid_dv_timings(const struct v4l2_dv_timings *t,
 	const struct v4l2_bt_timings *bt = &t->bt;
 	const struct v4l2_bt_timings_cap *cap = &dvcap->bt;
 	u32 caps = cap->capabilities;
-	const u32 max_vert = 10240;
-	u32 max_hor = 3 * bt->width;
 
 	if (t->type != V4L2_DV_BT_656_1120)
 		return false;
@@ -162,26 +160,6 @@ bool v4l2_valid_dv_timings(const struct v4l2_dv_timings *t,
 	     !(bt->standards & cap->standards)) ||
 	    (bt->interlaced && !(caps & V4L2_DV_BT_CAP_INTERLACED)) ||
 	    (!bt->interlaced && !(caps & V4L2_DV_BT_CAP_PROGRESSIVE)))
-		return false;
-
-	/* sanity checks for the blanking timings */
-	if (!bt->interlaced &&
-	    (bt->il_vbackporch || bt->il_vsync || bt->il_vfrontporch))
-		return false;
-	/*
-	 * Some video receivers cannot properly separate the frontporch,
-	 * backporch and sync values, and instead they only have the total
-	 * blanking. That can be assigned to any of these three fields.
-	 * So just check that none of these are way out of range.
-	 */
-	if (bt->hfrontporch > max_hor ||
-	    bt->hsync > max_hor || bt->hbackporch > max_hor)
-		return false;
-	if (bt->vfrontporch > max_vert ||
-	    bt->vsync > max_vert || bt->vbackporch > max_vert)
-		return false;
-	if (bt->interlaced && (bt->il_vfrontporch > max_vert ||
-	    bt->il_vsync > max_vert || bt->il_vbackporch > max_vert))
 		return false;
 	return fnc == NULL || fnc(t, fnc_handle);
 }
@@ -481,28 +459,25 @@ EXPORT_SYMBOL_GPL(v4l2_calc_timeperframe);
  * @polarities - the horizontal and vertical polarities (same as struct
  *		v4l2_bt_timings polarities).
  * @interlaced - if this flag is true, it indicates interlaced format
- * @cap - the v4l2_dv_timings_cap capabilities.
- * @timings - the resulting timings.
+ * @fmt - the resulting timings.
  *
  * This function will attempt to detect if the given values correspond to a
  * valid CVT format. If so, then it will return true, and fmt will be filled
  * in with the found CVT timings.
  */
-bool v4l2_detect_cvt(unsigned int frame_height,
-		     unsigned int hfreq,
-		     unsigned int vsync,
-		     unsigned int active_width,
+bool v4l2_detect_cvt(unsigned frame_height,
+		     unsigned hfreq,
+		     unsigned vsync,
+		     unsigned active_width,
 		     u32 polarities,
 		     bool interlaced,
-		     const struct v4l2_dv_timings_cap *cap,
-		     struct v4l2_dv_timings *timings)
+		     struct v4l2_dv_timings *fmt)
 {
-	struct v4l2_dv_timings t = {};
-	int v_fp, v_bp, h_fp, h_bp, hsync;
-	int frame_width, image_height, image_width;
+	int  v_fp, v_bp, h_fp, h_bp, hsync;
+	int  frame_width, image_height, image_width;
 	bool reduced_blanking;
 	bool rb_v2 = false;
-	unsigned int pix_clk;
+	unsigned pix_clk;
 
 	if (vsync < 4 || vsync > 8)
 		return false;
@@ -628,39 +603,36 @@ bool v4l2_detect_cvt(unsigned int frame_height,
 		h_fp = h_blank - hsync - h_bp;
 	}
 
-	t.type = V4L2_DV_BT_656_1120;
-	t.bt.polarities = polarities;
-	t.bt.width = image_width;
-	t.bt.height = image_height;
-	t.bt.hfrontporch = h_fp;
-	t.bt.vfrontporch = v_fp;
-	t.bt.hsync = hsync;
-	t.bt.vsync = vsync;
-	t.bt.hbackporch = frame_width - image_width - h_fp - hsync;
+	fmt->type = V4L2_DV_BT_656_1120;
+	fmt->bt.polarities = polarities;
+	fmt->bt.width = image_width;
+	fmt->bt.height = image_height;
+	fmt->bt.hfrontporch = h_fp;
+	fmt->bt.vfrontporch = v_fp;
+	fmt->bt.hsync = hsync;
+	fmt->bt.vsync = vsync;
+	fmt->bt.hbackporch = frame_width - image_width - h_fp - hsync;
 
 	if (!interlaced) {
-		t.bt.vbackporch = frame_height - image_height - v_fp - vsync;
-		t.bt.interlaced = V4L2_DV_PROGRESSIVE;
+		fmt->bt.vbackporch = frame_height - image_height - v_fp - vsync;
+		fmt->bt.interlaced = V4L2_DV_PROGRESSIVE;
 	} else {
-		t.bt.vbackporch = (frame_height - image_height - 2 * v_fp -
+		fmt->bt.vbackporch = (frame_height - image_height - 2 * v_fp -
 				      2 * vsync) / 2;
-		t.bt.il_vbackporch = frame_height - image_height - 2 * v_fp -
-					2 * vsync - t.bt.vbackporch;
-		t.bt.il_vfrontporch = v_fp;
-		t.bt.il_vsync = vsync;
-		t.bt.flags |= V4L2_DV_FL_HALF_LINE;
-		t.bt.interlaced = V4L2_DV_INTERLACED;
+		fmt->bt.il_vbackporch = frame_height - image_height - 2 * v_fp -
+					2 * vsync - fmt->bt.vbackporch;
+		fmt->bt.il_vfrontporch = v_fp;
+		fmt->bt.il_vsync = vsync;
+		fmt->bt.flags |= V4L2_DV_FL_HALF_LINE;
+		fmt->bt.interlaced = V4L2_DV_INTERLACED;
 	}
 
-	t.bt.pixelclock = pix_clk;
-	t.bt.standards = V4L2_DV_BT_STD_CVT;
+	fmt->bt.pixelclock = pix_clk;
+	fmt->bt.standards = V4L2_DV_BT_STD_CVT;
 
 	if (reduced_blanking)
-		t.bt.flags |= V4L2_DV_FL_REDUCED_BLANKING;
+		fmt->bt.flags |= V4L2_DV_FL_REDUCED_BLANKING;
 
-	if (!v4l2_valid_dv_timings(&t, cap, NULL, NULL))
-		return false;
-	*timings = t;
 	return true;
 }
 EXPORT_SYMBOL_GPL(v4l2_detect_cvt);
@@ -705,25 +677,22 @@ EXPORT_SYMBOL_GPL(v4l2_detect_cvt);
  *		image height, so it has to be passed explicitly. Usually
  *		the native screen aspect ratio is used for this. If it
  *		is not filled in correctly, then 16:9 will be assumed.
- * @cap - the v4l2_dv_timings_cap capabilities.
- * @timings - the resulting timings.
+ * @fmt - the resulting timings.
  *
  * This function will attempt to detect if the given values correspond to a
  * valid GTF format. If so, then it will return true, and fmt will be filled
  * in with the found GTF timings.
  */
-bool v4l2_detect_gtf(unsigned int frame_height,
-		     unsigned int hfreq,
-		     unsigned int vsync,
-		     u32 polarities,
-		     bool interlaced,
-		     struct v4l2_fract aspect,
-		     const struct v4l2_dv_timings_cap *cap,
-		     struct v4l2_dv_timings *timings)
+bool v4l2_detect_gtf(unsigned frame_height,
+		unsigned hfreq,
+		unsigned vsync,
+		u32 polarities,
+		bool interlaced,
+		struct v4l2_fract aspect,
+		struct v4l2_dv_timings *fmt)
 {
-	struct v4l2_dv_timings t = {};
 	int pix_clk;
-	int v_fp, v_bp, h_fp, hsync;
+	int  v_fp, v_bp, h_fp, hsync;
 	int frame_width, image_height, image_width;
 	bool default_gtf;
 	int h_blank;
@@ -792,39 +761,36 @@ bool v4l2_detect_gtf(unsigned int frame_height,
 
 	h_fp = h_blank / 2 - hsync;
 
-	t.type = V4L2_DV_BT_656_1120;
-	t.bt.polarities = polarities;
-	t.bt.width = image_width;
-	t.bt.height = image_height;
-	t.bt.hfrontporch = h_fp;
-	t.bt.vfrontporch = v_fp;
-	t.bt.hsync = hsync;
-	t.bt.vsync = vsync;
-	t.bt.hbackporch = frame_width - image_width - h_fp - hsync;
+	fmt->type = V4L2_DV_BT_656_1120;
+	fmt->bt.polarities = polarities;
+	fmt->bt.width = image_width;
+	fmt->bt.height = image_height;
+	fmt->bt.hfrontporch = h_fp;
+	fmt->bt.vfrontporch = v_fp;
+	fmt->bt.hsync = hsync;
+	fmt->bt.vsync = vsync;
+	fmt->bt.hbackporch = frame_width - image_width - h_fp - hsync;
 
 	if (!interlaced) {
-		t.bt.vbackporch = frame_height - image_height - v_fp - vsync;
-		t.bt.interlaced = V4L2_DV_PROGRESSIVE;
+		fmt->bt.vbackporch = frame_height - image_height - v_fp - vsync;
+		fmt->bt.interlaced = V4L2_DV_PROGRESSIVE;
 	} else {
-		t.bt.vbackporch = (frame_height - image_height - 2 * v_fp -
+		fmt->bt.vbackporch = (frame_height - image_height - 2 * v_fp -
 				      2 * vsync) / 2;
-		t.bt.il_vbackporch = frame_height - image_height - 2 * v_fp -
-					2 * vsync - t.bt.vbackporch;
-		t.bt.il_vfrontporch = v_fp;
-		t.bt.il_vsync = vsync;
-		t.bt.flags |= V4L2_DV_FL_HALF_LINE;
-		t.bt.interlaced = V4L2_DV_INTERLACED;
+		fmt->bt.il_vbackporch = frame_height - image_height - 2 * v_fp -
+					2 * vsync - fmt->bt.vbackporch;
+		fmt->bt.il_vfrontporch = v_fp;
+		fmt->bt.il_vsync = vsync;
+		fmt->bt.flags |= V4L2_DV_FL_HALF_LINE;
+		fmt->bt.interlaced = V4L2_DV_INTERLACED;
 	}
 
-	t.bt.pixelclock = pix_clk;
-	t.bt.standards = V4L2_DV_BT_STD_GTF;
+	fmt->bt.pixelclock = pix_clk;
+	fmt->bt.standards = V4L2_DV_BT_STD_GTF;
 
 	if (!default_gtf)
-		t.bt.flags |= V4L2_DV_FL_REDUCED_BLANKING;
+		fmt->bt.flags |= V4L2_DV_FL_REDUCED_BLANKING;
 
-	if (!v4l2_valid_dv_timings(&t, cap, NULL, NULL))
-		return false;
-	*timings = t;
 	return true;
 }
 EXPORT_SYMBOL_GPL(v4l2_detect_gtf);

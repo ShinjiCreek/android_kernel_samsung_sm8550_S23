@@ -724,10 +724,8 @@ lpfc_rcv_padisc(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 				/* Save the ELS cmd */
 				elsiocb->drvrTimeout = cmd;
 
-				if (lpfc_sli4_resume_rpi(ndlp,
-						lpfc_mbx_cmpl_resume_rpi,
-						elsiocb))
-					kfree(elsiocb);
+				lpfc_sli4_resume_rpi(ndlp,
+					lpfc_mbx_cmpl_resume_rpi, elsiocb);
 				goto out;
 			}
 		}
@@ -812,8 +810,7 @@ lpfc_rcv_logo(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 		lpfc_nvmet_invalidate_host(phba, ndlp);
 
 	if (ndlp->nlp_DID == Fabric_DID) {
-		if (vport->port_state <= LPFC_FDISC ||
-		    vport->fc_flag & FC_PT2PT)
+		if (vport->port_state <= LPFC_FDISC)
 			goto out;
 		lpfc_linkdown_port(vport);
 		spin_lock_irq(shost->host_lock);

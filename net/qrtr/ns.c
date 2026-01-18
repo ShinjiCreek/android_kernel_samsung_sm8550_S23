@@ -83,10 +83,7 @@ static struct qrtr_node *node_get(unsigned int node_id)
 
 	node->id = node_id;
 
-	if (radix_tree_insert(&nodes, node_id, node)) {
-		kfree(node);
-		return NULL;
-	}
+	radix_tree_insert(&nodes, node_id, node);
 
 	return node;
 }
@@ -273,7 +270,7 @@ err:
 	return NULL;
 }
 
-static int server_del(struct qrtr_node *node, unsigned int port, bool bcast)
+static int server_del(struct qrtr_node *node, unsigned int port)
 {
 	struct qrtr_lookup *lookup;
 	struct qrtr_server *srv;
@@ -286,7 +283,7 @@ static int server_del(struct qrtr_node *node, unsigned int port, bool bcast)
 	radix_tree_delete(&node->servers, port);
 
 	/* Broadcast the removal of local servers */
-	if (srv->node == qrtr_ns.local_node && bcast)
+	if (srv->node == qrtr_ns.local_node)
 		service_announce_del(&qrtr_ns.bcast_sq, srv);
 
 	/* Announce the service's disappearance to observers */
@@ -372,7 +369,7 @@ static int ctrl_cmd_bye(struct sockaddr_qrtr *from)
 		}
 		slot = radix_tree_iter_resume(slot, &iter);
 		rcu_read_unlock();
-		server_del(node, srv->port, true);
+		server_del(node, srv->port);
 		rcu_read_lock();
 	}
 	rcu_read_unlock();
@@ -458,13 +455,10 @@ static int ctrl_cmd_del_client(struct sockaddr_qrtr *from,
 		kfree(lookup);
 	}
 
-	/* Remove the server belonging to this port but don't broadcast
-	 * DEL_SERVER. Neighbours would've already removed the server belonging
-	 * to this port due to the DEL_CLIENT broadcast from qrtr_port_remove().
-	 */
+	/* Remove the server belonging to this port */
 	node = node_get(node_id);
 	if (node)
-		server_del(node, port, false);
+		server_del(node, port);
 
 	/* Advertise the removal of this client to all local servers */
 	local_node = node_get(qrtr_ns.local_node);
@@ -569,9 +563,7 @@ static int ctrl_cmd_del_server(struct sockaddr_qrtr *from,
 	if (!node)
 		return -ENOENT;
 
-	server_del(node, port, true);
-
-	return 0;
+	return server_del(node, port);
 }
 
 static int ctrl_cmd_new_lookup(struct sockaddr_qrtr *from,
@@ -807,24 +799,6 @@ int qrtr_ns_init(void)
 	if (ret < 0)
 		goto err_wq;
 
-	/* As the qrtr ns socket owner and creator is the same module, we have
-	 * to decrease the qrtr module reference count to guarantee that it
-	 * remains zero after the ns socket is created, otherwise, executing
-	 * "rmmod" command is unable to make the qrtr module deleted after the
-	 *  qrtr module is inserted successfully.
-	 *
-	 * However, the reference count is increased twice in
-	 * sock_create_kern(): one is to increase the reference count of owner
-	 * of qrtr socket's proto_ops struct; another is to increment the
-	 * reference count of owner of qrtr proto struct. Therefore, we must
-	 * decrement the module reference count twice to ensure that it keeps
-	 * zero after server's listening socket is created. Of course, we
-	 * must bump the module reference count twice as well before the socket
-	 * is closed.
-	 */
-	module_put(qrtr_ns.sock->ops->owner);
-	module_put(qrtr_ns.sock->sk->sk_prot_creator->owner);
-
 	return 0;
 
 err_wq:
@@ -839,15 +813,6 @@ void qrtr_ns_remove(void)
 {
 	cancel_work_sync(&qrtr_ns.work);
 	destroy_workqueue(qrtr_ns.workqueue);
-
-	/* sock_release() expects the two references that were put during
-	 * qrtr_ns_init(). This function is only called during module remove,
-	 * so try_stop_module() has already set the refcnt to 0. Use
-	 * __module_get() instead of try_module_get() to successfully take two
-	 * references.
-	 */
-	__module_get(qrtr_ns.sock->ops->owner);
-	__module_get(qrtr_ns.sock->sk->sk_prot_creator->owner);
 	sock_release(qrtr_ns.sock);
 }
 EXPORT_SYMBOL_GPL(qrtr_ns_remove);

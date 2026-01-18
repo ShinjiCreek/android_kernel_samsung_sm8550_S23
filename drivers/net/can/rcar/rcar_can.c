@@ -223,6 +223,7 @@ static void tx_failure_cleanup(struct net_device *ndev)
 static void rcar_can_error(struct net_device *ndev)
 {
 	struct rcar_can_priv *priv = netdev_priv(ndev);
+	struct net_device_stats *stats = &ndev->stats;
 	struct can_frame *cf;
 	struct sk_buff *skb;
 	u8 eifr, txerr = 0, rxerr = 0;
@@ -234,8 +235,11 @@ static void rcar_can_error(struct net_device *ndev)
 	if (eifr & (RCAR_CAN_EIFR_EWIF | RCAR_CAN_EIFR_EPIF)) {
 		txerr = readb(&priv->regs->tecr);
 		rxerr = readb(&priv->regs->recr);
-		if (skb)
+		if (skb) {
 			cf->can_id |= CAN_ERR_CRTL;
+			cf->data[6] = txerr;
+			cf->data[7] = rxerr;
+		}
 	}
 	if (eifr & RCAR_CAN_EIFR_BEIF) {
 		int rx_errors = 0, tx_errors = 0;
@@ -335,9 +339,6 @@ static void rcar_can_error(struct net_device *ndev)
 		can_bus_off(ndev);
 		if (skb)
 			cf->can_id |= CAN_ERR_BUSOFF;
-	} else if (skb) {
-		cf->data[6] = txerr;
-		cf->data[7] = rxerr;
 	}
 	if (eifr & RCAR_CAN_EIFR_ORIF) {
 		netdev_dbg(priv->ndev, "Receive overrun error interrupt\n");
@@ -361,8 +362,11 @@ static void rcar_can_error(struct net_device *ndev)
 		}
 	}
 
-	if (skb)
+	if (skb) {
+		stats->rx_packets++;
+		stats->rx_bytes += cf->len;
 		netif_rx(skb);
+	}
 }
 
 static void rcar_can_tx_done(struct net_device *ndev)

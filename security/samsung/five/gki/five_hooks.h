@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Five Event interface
  *
@@ -21,8 +20,7 @@
 #include <linux/file.h>
 #include <linux/rculist.h>
 #include <linux/sched.h>
-
-#include "task_integrity.h"
+#include <linux/task_integrity.h>
 
 void five_hook_file_processed(struct task_struct *task,
 				struct file *file, void *xattr,
@@ -107,5 +105,7 @@ static inline void five_add_hooks(struct five_hook_list *hooks,
 	for (i = 0; i < count; i++)
 		list_add_tail_rcu(&hooks[i].list, hooks[i].head);
 }
+
+int five_hook_wq_init(void);
 
 #endif /* _FIVE_HOOKS_H */

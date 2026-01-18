@@ -472,8 +472,12 @@ nvmet_rdma_alloc_rsps(struct nvmet_rdma_queue *queue)
 	return 0;
 
 out_free:
-	while (--i >= 0)
-		nvmet_rdma_free_rsp(ndev, &queue->rsps[i]);
+	while (--i >= 0) {
+		struct nvmet_rdma_rsp *rsp = &queue->rsps[i];
+
+		list_del(&rsp->free_list);
+		nvmet_rdma_free_rsp(ndev, rsp);
+	}
 	kfree(queue->rsps);
 out:
 	return ret;
@@ -484,8 +488,12 @@ static void nvmet_rdma_free_rsps(struct nvmet_rdma_queue *queue)
 	struct nvmet_rdma_device *ndev = queue->dev;
 	int i, nr_rsps = queue->recv_queue_size * 2;
 
-	for (i = 0; i < nr_rsps; i++)
-		nvmet_rdma_free_rsp(ndev, &queue->rsps[i]);
+	for (i = 0; i < nr_rsps; i++) {
+		struct nvmet_rdma_rsp *rsp = &queue->rsps[i];
+
+		list_del(&rsp->free_list);
+		nvmet_rdma_free_rsp(ndev, rsp);
+	}
 	kfree(queue->rsps);
 }
 
@@ -1575,7 +1583,7 @@ static int nvmet_rdma_queue_connect(struct rdma_cm_id *cm_id,
 
 	if (queue->host_qid == 0) {
 		/* Let inflight controller teardown complete */
-		flush_workqueue(nvmet_wq);
+		flush_scheduled_work();
 	}
 
 	ret = nvmet_rdma_cm_accept(cm_id, queue, &event->param.conn);
@@ -1660,7 +1668,7 @@ static void __nvmet_rdma_queue_disconnect(struct nvmet_rdma_queue *queue)
 
 	if (disconnect) {
 		rdma_disconnect(queue->cm_id);
-		queue_work(nvmet_wq, &queue->release_work);
+		schedule_work(&queue->release_work);
 	}
 }
 
@@ -1690,7 +1698,7 @@ static void nvmet_rdma_queue_connect_fail(struct rdma_cm_id *cm_id,
 	mutex_unlock(&nvmet_rdma_queue_mutex);
 
 	pr_err("failed to connect queue %d\n", queue->idx);
-	queue_work(nvmet_wq, &queue->release_work);
+	schedule_work(&queue->release_work);
 }
 
 /**
@@ -1764,7 +1772,7 @@ static int nvmet_rdma_cm_handler(struct rdma_cm_id *cm_id,
 		if (!queue) {
 			struct nvmet_rdma_port *port = cm_id->context;
 
-			queue_delayed_work(nvmet_wq, &port->repair_work, 0);
+			schedule_delayed_work(&port->repair_work, 0);
 			break;
 		}
 		fallthrough;
@@ -1894,7 +1902,7 @@ static void nvmet_rdma_repair_port_work(struct work_struct *w)
 	nvmet_rdma_disable_port(port);
 	ret = nvmet_rdma_enable_port(port);
 	if (ret)
-		queue_delayed_work(nvmet_wq, &port->repair_work, 5 * HZ);
+		schedule_delayed_work(&port->repair_work, 5 * HZ);
 }
 
 static int nvmet_rdma_add_port(struct nvmet_port *nport)
@@ -2038,7 +2046,7 @@ static void nvmet_rdma_remove_one(struct ib_device *ib_device, void *client_data
 	}
 	mutex_unlock(&nvmet_rdma_queue_mutex);
 
-	flush_workqueue(nvmet_wq);
+	flush_scheduled_work();
 }
 
 static struct ib_client nvmet_rdma_ib_client = {

@@ -389,7 +389,7 @@ static void inverse_every_nibble(unsigned char *mac_addr)
  * Outputs
  * return the calculated entry.
  */
-static u32 hash_function(const unsigned char *mac_addr_orig)
+static u32 hash_function(unsigned char *mac_addr_orig)
 {
 	u32 hash_result;
 	u32 addr0;
@@ -434,7 +434,7 @@ static u32 hash_function(const unsigned char *mac_addr_orig)
  * -ENOSPC if table full
  */
 static int add_del_hash_entry(struct pxa168_eth_private *pep,
-			      const unsigned char *mac_addr,
+			      unsigned char *mac_addr,
 			      u32 rd, u32 skip, int del)
 {
 	struct addr_table_entry *entry, *start;
@@ -521,7 +521,7 @@ static int add_del_hash_entry(struct pxa168_eth_private *pep,
  */
 static void update_hash_table_mac_address(struct pxa168_eth_private *pep,
 					  unsigned char *oaddr,
-					  const unsigned char *addr)
+					  unsigned char *addr)
 {
 	/* Delete old entry */
 	if (oaddr)
@@ -1396,15 +1396,18 @@ static int pxa168_eth_probe(struct platform_device *pdev)
 
 	printk(KERN_NOTICE "PXA168 10/100 Ethernet Driver\n");
 
-	clk = devm_clk_get_enabled(&pdev->dev, NULL);
+	clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
-		dev_err(&pdev->dev, "Fast Ethernet failed to get and enable clock\n");
+		dev_err(&pdev->dev, "Fast Ethernet failed to get clock\n");
 		return -ENODEV;
 	}
+	clk_prepare_enable(clk);
 
 	dev = alloc_etherdev(sizeof(struct pxa168_eth_private));
-	if (!dev)
-		return -ENOMEM;
+	if (!dev) {
+		err = -ENOMEM;
+		goto err_clk;
+	}
 
 	platform_set_drvdata(pdev, dev);
 	pep = netdev_priv(dev);
@@ -1431,7 +1434,7 @@ static int pxa168_eth_probe(struct platform_device *pdev)
 
 	INIT_WORK(&pep->tx_timeout_task, pxa168_eth_tx_timeout_task);
 
-	err = of_get_ethdev_address(pdev->dev.of_node, dev);
+	err = of_get_mac_address(pdev->dev.of_node, dev->dev_addr);
 	if (err) {
 		/* try reading the mac address, if set by the bootloader */
 		pxa168_eth_get_mac_address(dev, dev->dev_addr);
@@ -1515,6 +1518,8 @@ err_free_mdio:
 	mdiobus_free(pep->smi_bus);
 err_netdev:
 	free_netdev(dev);
+err_clk:
+	clk_disable_unprepare(clk);
 	return err;
 }
 
@@ -1532,6 +1537,7 @@ static int pxa168_eth_remove(struct platform_device *pdev)
 	if (dev->phydev)
 		phy_disconnect(dev->phydev);
 
+	clk_disable_unprepare(pep->clk);
 	mdiobus_unregister(pep->smi_bus);
 	mdiobus_free(pep->smi_bus);
 	unregister_netdev(dev);

@@ -78,9 +78,11 @@ static struct page *brd_lookup_page(struct brd_device *brd, sector_t sector)
 }
 
 /*
- * Insert a new page for a given sector, if one does not already exist.
+ * Look up and return a brd's page for a given sector.
+ * If one does not exist, allocate an empty page, and insert that. Then
+ * return it.
  */
-static int brd_insert_page(struct brd_device *brd, sector_t sector)
+static struct page *brd_insert_page(struct brd_device *brd, sector_t sector)
 {
 	pgoff_t idx;
 	struct page *page;
@@ -88,7 +90,7 @@ static int brd_insert_page(struct brd_device *brd, sector_t sector)
 
 	page = brd_lookup_page(brd, sector);
 	if (page)
-		return 0;
+		return page;
 
 	/*
 	 * Must use NOIO because we don't want to recurse back into the
@@ -97,11 +99,11 @@ static int brd_insert_page(struct brd_device *brd, sector_t sector)
 	gfp_flags = GFP_NOIO | __GFP_ZERO | __GFP_HIGHMEM;
 	page = alloc_page(gfp_flags);
 	if (!page)
-		return -ENOMEM;
+		return NULL;
 
 	if (radix_tree_preload(GFP_NOIO)) {
 		__free_page(page);
-		return -ENOMEM;
+		return NULL;
 	}
 
 	spin_lock(&brd->brd_lock);
@@ -118,7 +120,8 @@ static int brd_insert_page(struct brd_device *brd, sector_t sector)
 	spin_unlock(&brd->brd_lock);
 
 	radix_tree_preload_end();
-	return 0;
+
+	return page;
 }
 
 /*
@@ -171,17 +174,16 @@ static int copy_to_brd_setup(struct brd_device *brd, sector_t sector, size_t n)
 {
 	unsigned int offset = (sector & (PAGE_SECTORS-1)) << SECTOR_SHIFT;
 	size_t copy;
-	int ret;
 
 	copy = min_t(size_t, n, PAGE_SIZE - offset);
-	ret = brd_insert_page(brd, sector);
-	if (ret)
-		return ret;
+	if (!brd_insert_page(brd, sector))
+		return -ENOSPC;
 	if (copy < n) {
 		sector += copy >> SECTOR_SHIFT;
-		ret = brd_insert_page(brd, sector);
+		if (!brd_insert_page(brd, sector))
+			return -ENOSPC;
 	}
-	return ret;
+	return 0;
 }
 
 /*
@@ -365,47 +367,27 @@ static LIST_HEAD(brd_devices);
 static DEFINE_MUTEX(brd_devices_mutex);
 static struct dentry *brd_debugfs_dir;
 
-static struct brd_device *brd_find_or_alloc_device(int i)
-{
-	struct brd_device *brd;
-
-	mutex_lock(&brd_devices_mutex);
-	list_for_each_entry(brd, &brd_devices, brd_list) {
-		if (brd->brd_number == i) {
-			mutex_unlock(&brd_devices_mutex);
-			return ERR_PTR(-EEXIST);
-		}
-	}
-
-	brd = kzalloc(sizeof(*brd), GFP_KERNEL);
-	if (!brd) {
-		mutex_unlock(&brd_devices_mutex);
-		return ERR_PTR(-ENOMEM);
-	}
-	brd->brd_number	= i;
-	list_add_tail(&brd->brd_list, &brd_devices);
-	mutex_unlock(&brd_devices_mutex);
-	return brd;
-}
-
-static void brd_free_device(struct brd_device *brd)
-{
-	mutex_lock(&brd_devices_mutex);
-	list_del(&brd->brd_list);
-	mutex_unlock(&brd_devices_mutex);
-	kfree(brd);
-}
-
 static int brd_alloc(int i)
 {
 	struct brd_device *brd;
 	struct gendisk *disk;
 	char buf[DISK_NAME_LEN];
-	int err = -ENOMEM;
 
-	brd = brd_find_or_alloc_device(i);
-	if (IS_ERR(brd))
-		return PTR_ERR(brd);
+	mutex_lock(&brd_devices_mutex);
+	list_for_each_entry(brd, &brd_devices, brd_list) {
+		if (brd->brd_number == i) {
+			mutex_unlock(&brd_devices_mutex);
+			return -EEXIST;
+		}
+	}
+	brd = kzalloc(sizeof(*brd), GFP_KERNEL);
+	if (!brd) {
+		mutex_unlock(&brd_devices_mutex);
+		return -ENOMEM;
+	}
+	brd->brd_number		= i;
+	list_add_tail(&brd->brd_list, &brd_devices);
+	mutex_unlock(&brd_devices_mutex);
 
 	spin_lock_init(&brd->brd_lock);
 	INIT_RADIX_TREE(&brd->brd_pages, GFP_ATOMIC);
@@ -440,18 +422,16 @@ static int brd_alloc(int i)
 	/* Tell the block layer that this is not a rotational device */
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, disk->queue);
 	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, disk->queue);
-	blk_queue_flag_set(QUEUE_FLAG_NOWAIT, disk->queue);
-	err = add_disk(disk);
-	if (err)
-		goto out_cleanup_disk;
+	add_disk(disk);
 
 	return 0;
 
-out_cleanup_disk:
-	blk_cleanup_disk(disk);
 out_free_dev:
-	brd_free_device(brd);
-	return err;
+	mutex_lock(&brd_devices_mutex);
+	list_del(&brd->brd_list);
+	mutex_unlock(&brd_devices_mutex);
+	kfree(brd);
+	return -ENOMEM;
 }
 
 static void brd_probe(dev_t dev)
@@ -459,18 +439,15 @@ static void brd_probe(dev_t dev)
 	brd_alloc(MINOR(dev) / max_part);
 }
 
-static void brd_cleanup(void)
+static void brd_del_one(struct brd_device *brd)
 {
-	struct brd_device *brd, *next;
-
-	debugfs_remove_recursive(brd_debugfs_dir);
-
-	list_for_each_entry_safe(brd, next, &brd_devices, brd_list) {
-		del_gendisk(brd->brd_disk);
-		blk_cleanup_disk(brd->brd_disk);
-		brd_free_pages(brd);
-		brd_free_device(brd);
-	}
+	del_gendisk(brd->brd_disk);
+	blk_cleanup_disk(brd->brd_disk);
+	brd_free_pages(brd);
+	mutex_lock(&brd_devices_mutex);
+	list_del(&brd->brd_list);
+	mutex_unlock(&brd_devices_mutex);
+	kfree(brd);
 }
 
 static inline void brd_check_and_reset_par(void)
@@ -494,6 +471,7 @@ static inline void brd_check_and_reset_par(void)
 
 static int __init brd_init(void)
 {
+	struct brd_device *brd, *next;
 	int err, i;
 
 	/*
@@ -511,23 +489,28 @@ static int __init brd_init(void)
 	 *	dynamically.
 	 */
 
+	if (__register_blkdev(RAMDISK_MAJOR, "ramdisk", brd_probe))
+		return -EIO;
+
 	brd_check_and_reset_par();
 
 	brd_debugfs_dir = debugfs_create_dir("ramdisk_pages", NULL);
 
-	if (__register_blkdev(RAMDISK_MAJOR, "ramdisk", brd_probe)) {
-		err = -EIO;
-		goto out_free;
+	for (i = 0; i < rd_nr; i++) {
+		err = brd_alloc(i);
+		if (err)
+			goto out_free;
 	}
-
-	for (i = 0; i < rd_nr; i++)
-		brd_alloc(i);
 
 	pr_info("brd: module loaded\n");
 	return 0;
 
 out_free:
-	brd_cleanup();
+	unregister_blkdev(RAMDISK_MAJOR, "ramdisk");
+	debugfs_remove_recursive(brd_debugfs_dir);
+
+	list_for_each_entry_safe(brd, next, &brd_devices, brd_list)
+		brd_del_one(brd);
 
 	pr_info("brd: module NOT loaded !!!\n");
 	return err;
@@ -535,9 +518,13 @@ out_free:
 
 static void __exit brd_exit(void)
 {
+	struct brd_device *brd, *next;
 
 	unregister_blkdev(RAMDISK_MAJOR, "ramdisk");
-	brd_cleanup();
+	debugfs_remove_recursive(brd_debugfs_dir);
+
+	list_for_each_entry_safe(brd, next, &brd_devices, brd_list)
+		brd_del_one(brd);
 
 	pr_info("brd: module unloaded\n");
 }

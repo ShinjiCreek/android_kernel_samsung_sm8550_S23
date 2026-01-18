@@ -744,18 +744,10 @@ prog_dump(struct bpf_prog_info *info, enum dump_mode mode,
 					printf("%s:\n", sym_name);
 				}
 
-				if (ksyms) {
-					if (disasm_print_insn(img, lens[i], opcodes,
-							      name, disasm_opt, btf,
-							      prog_linfo, ksyms[i], i,
-							      linum))
-						goto exit_free;
-				} else {
-					if (disasm_print_insn(img, lens[i], opcodes,
-							      name, disasm_opt, btf,
-							      NULL, 0, 0, false))
-						goto exit_free;
-				}
+				disasm_print_insn(img, lens[i], opcodes,
+						  name, disasm_opt, btf,
+						  prog_linfo, ksyms[i], i,
+						  linum);
 
 				img += lens[i];
 
@@ -768,10 +760,8 @@ prog_dump(struct bpf_prog_info *info, enum dump_mode mode,
 			if (json_output)
 				jsonw_end_array(json_wtr);
 		} else {
-			if (disasm_print_insn(buf, member_len, opcodes, name,
-					      disasm_opt, btf, NULL, 0, 0,
-					      false))
-				goto exit_free;
+			disasm_print_insn(buf, member_len, opcodes, name,
+					  disasm_opt, btf, NULL, 0, 0, false);
 		}
 	} else if (visual) {
 		if (json_output)
@@ -2074,41 +2064,13 @@ static void profile_close_perf_events(struct profiler_bpf *obj)
 	profile_perf_event_cnt = 0;
 }
 
-static int profile_open_perf_event(int mid, int cpu, int map_fd)
-{
-	int pmu_fd;
-
-	pmu_fd = syscall(__NR_perf_event_open, &metrics[mid].attr,
-			 -1 /*pid*/, cpu, -1 /*group_fd*/, 0);
-	if (pmu_fd < 0) {
-		if (errno == ENODEV) {
-			p_info("cpu %d may be offline, skip %s profiling.",
-				cpu, metrics[mid].name);
-			profile_perf_event_cnt++;
-			return 0;
-		}
-		return -1;
-	}
-
-	if (bpf_map_update_elem(map_fd,
-				&profile_perf_event_cnt,
-				&pmu_fd, BPF_ANY) ||
-	    ioctl(pmu_fd, PERF_EVENT_IOC_ENABLE, 0)) {
-		close(pmu_fd);
-		return -1;
-	}
-
-	profile_perf_events[profile_perf_event_cnt++] = pmu_fd;
-	return 0;
-}
-
 static int profile_open_perf_events(struct profiler_bpf *obj)
 {
 	unsigned int cpu, m;
-	int map_fd;
+	int map_fd, pmu_fd;
 
 	profile_perf_events = calloc(
-		obj->rodata->num_cpu * obj->rodata->num_metric, sizeof(int));
+		sizeof(int), obj->rodata->num_cpu * obj->rodata->num_metric);
 	if (!profile_perf_events) {
 		p_err("failed to allocate memory for perf_event array: %s",
 		      strerror(errno));
@@ -2124,11 +2086,17 @@ static int profile_open_perf_events(struct profiler_bpf *obj)
 		if (!metrics[m].selected)
 			continue;
 		for (cpu = 0; cpu < obj->rodata->num_cpu; cpu++) {
-			if (profile_open_perf_event(m, cpu, map_fd)) {
+			pmu_fd = syscall(__NR_perf_event_open, &metrics[m].attr,
+					 -1/*pid*/, cpu, -1/*group_fd*/, 0);
+			if (pmu_fd < 0 ||
+			    bpf_map_update_elem(map_fd, &profile_perf_event_cnt,
+						&pmu_fd, BPF_ANY) ||
+			    ioctl(pmu_fd, PERF_EVENT_IOC_ENABLE, 0)) {
 				p_err("failed to create event %s on cpu %d",
 				      metrics[m].name, cpu);
 				return -1;
 			}
+			profile_perf_events[profile_perf_event_cnt++] = pmu_fd;
 		}
 	}
 	return 0;

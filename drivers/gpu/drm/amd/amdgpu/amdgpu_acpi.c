@@ -108,7 +108,6 @@ static union acpi_object *amdgpu_atif_call(struct amdgpu_atif *atif,
 					   struct acpi_buffer *params)
 {
 	acpi_status status;
-	union acpi_object *obj;
 	union acpi_object atif_arg_elements[2];
 	struct acpi_object_list atif_arg;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
@@ -131,24 +130,16 @@ static union acpi_object *amdgpu_atif_call(struct amdgpu_atif *atif,
 
 	status = acpi_evaluate_object(atif->handle, NULL, &atif_arg,
 				      &buffer);
-	obj = (union acpi_object *)buffer.pointer;
 
-	/* Fail if calling the method fails */
-	if (ACPI_FAILURE(status)) {
+	/* Fail only if calling the method fails and ATIF is supported */
+	if (ACPI_FAILURE(status) && status != AE_NOT_FOUND) {
 		DRM_DEBUG_DRIVER("failed to evaluate ATIF got %s\n",
 				 acpi_format_exception(status));
-		kfree(obj);
+		kfree(buffer.pointer);
 		return NULL;
 	}
 
-	if (obj->type != ACPI_TYPE_BUFFER) {
-		DRM_DEBUG_DRIVER("bad object returned from ATIF: %d\n",
-				 obj->type);
-		kfree(obj);
-		return NULL;
-	}
-
-	return obj;
+	return buffer.pointer;
 }
 
 /**
@@ -761,7 +752,6 @@ int amdgpu_acpi_power_shift_control(struct amdgpu_device *adev,
 		return -EIO;
 	}
 
-	kfree(info);
 	return 0;
 }
 
@@ -1053,24 +1043,6 @@ bool amdgpu_acpi_is_s3_active(struct amdgpu_device *adev)
 {
 	return !(adev->flags & AMD_IS_APU) ||
 		(pm_suspend_target_state == PM_SUSPEND_MEM);
-}
-
-/**
- * amdgpu_acpi_should_gpu_reset
- *
- * @adev: amdgpu_device_pointer
- *
- * returns true if should reset GPU, false if not
- */
-bool amdgpu_acpi_should_gpu_reset(struct amdgpu_device *adev)
-{
-	if (adev->flags & AMD_IS_APU)
-		return false;
-
-	if (amdgpu_sriov_vf(adev))
-		return false;
-
-	return pm_suspend_target_state != PM_SUSPEND_TO_IDLE;
 }
 
 /**

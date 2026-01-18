@@ -108,6 +108,18 @@ static void bpf_trampoline_module_put(struct bpf_trampoline *tr)
 	tr->mod = NULL;
 }
 
+static int is_ftrace_location(void *ip)
+{
+	long addr;
+
+	addr = ftrace_location((long)ip);
+	if (!addr)
+		return 0;
+	if (WARN_ON_ONCE(addr != (long)ip))
+		return -EFAULT;
+	return 1;
+}
+
 static int unregister_fentry(struct bpf_trampoline *tr, void *old_addr)
 {
 	void *ip = tr->func.addr;
@@ -139,12 +151,12 @@ static int modify_fentry(struct bpf_trampoline *tr, void *old_addr, void *new_ad
 static int register_fentry(struct bpf_trampoline *tr, void *new_addr)
 {
 	void *ip = tr->func.addr;
-	unsigned long faddr;
 	int ret;
 
-	faddr = ftrace_location((unsigned long)ip);
-	if (faddr)
-		tr->func.ftrace_managed = true;
+	ret = is_ftrace_location(ip);
+	if (ret < 0)
+		return ret;
+	tr->func.ftrace_managed = ret;
 
 	if (bpf_trampoline_module_get(tr))
 		return -ENOENT;
@@ -402,7 +414,7 @@ int bpf_trampoline_link_prog(struct bpf_prog *prog, struct bpf_trampoline *tr)
 {
 	enum bpf_tramp_prog_type kind;
 	int err = 0;
-	int cnt = 0, i;
+	int cnt;
 
 	kind = bpf_attach_type_to_tramp(prog);
 	mutex_lock(&tr->mutex);
@@ -413,10 +425,7 @@ int bpf_trampoline_link_prog(struct bpf_prog *prog, struct bpf_trampoline *tr)
 		err = -EBUSY;
 		goto out;
 	}
-
-	for (i = 0; i < BPF_TRAMP_MAX; i++)
-		cnt += tr->progs_cnt[i];
-
+	cnt = tr->progs_cnt[BPF_TRAMP_FENTRY] + tr->progs_cnt[BPF_TRAMP_FEXIT];
 	if (kind == BPF_TRAMP_REPLACE) {
 		/* Cannot attach extension if fentry/fexit are in use. */
 		if (cnt) {
@@ -494,19 +503,16 @@ out:
 
 void bpf_trampoline_put(struct bpf_trampoline *tr)
 {
-	int i;
-
 	if (!tr)
 		return;
 	mutex_lock(&trampoline_mutex);
 	if (!refcount_dec_and_test(&tr->refcnt))
 		goto out;
 	WARN_ON_ONCE(mutex_is_locked(&tr->mutex));
-
-	for (i = 0; i < BPF_TRAMP_MAX; i++)
-		if (WARN_ON_ONCE(!hlist_empty(&tr->progs_hlist[i])))
-			goto out;
-
+	if (WARN_ON_ONCE(!hlist_empty(&tr->progs_hlist[BPF_TRAMP_FENTRY])))
+		goto out;
+	if (WARN_ON_ONCE(!hlist_empty(&tr->progs_hlist[BPF_TRAMP_FEXIT])))
+		goto out;
 	/* This code will be executed even when the last bpf_tramp_image
 	 * is alive. All progs are detached from the trampoline and the
 	 * trampoline image is patched with jmp into epilogue to skip

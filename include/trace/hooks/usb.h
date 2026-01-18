@@ -10,14 +10,8 @@
  * Following tracepoints are not exported in tracefs and provide a
  * mechanism for vendor modules to hook and extend functionality
  */
-
-#ifdef __GENKSYMS__
+/* struct usb_device */
 #include <linux/usb.h>
-#endif
-
-struct usb_device;
-struct urb;
-
 DECLARE_HOOK(android_vh_usb_new_device_added,
 	TP_PROTO(struct usb_device *udev, int *err),
 	TP_ARGS(udev, err));
@@ -29,10 +23,6 @@ DECLARE_HOOK(android_vh_usb_dev_suspend,
 DECLARE_HOOK(android_vh_usb_dev_resume,
 	TP_PROTO(struct usb_device *udev, pm_message_t msg, int *bypass),
 	TP_ARGS(udev, msg, bypass));
-
-DECLARE_HOOK(android_vh_xhci_urb_suitable_bypass,
-	TP_PROTO(struct urb *urb, int *ret),
-	TP_ARGS(urb, ret));
 
 #endif /* _TRACE_HOOK_USB_H */
 /* This part must be outside protection */

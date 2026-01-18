@@ -23,7 +23,6 @@
 #include <linux/sched/cputime.h>
 #include <linux/vmstat.h>
 
-#include <trace/hooks/dmabuf.h>
 #include <trace/events/tracing_mark_write.h>
 
 #define DEVNAME "dma_heap"
@@ -123,8 +122,7 @@ static void dma_heap_print_vmstat(unsigned long before[], unsigned long after[])
 		pr_cont("%lu ", (after[i] - before[i]) << (PAGE_SHIFT - 10));
 
 	pr_cont("na %lu ", K(global_node_page_state_pages(NR_ANON_MAPPED)));
-	pr_cont("nf %lu ", K(global_node_page_state_pages(NR_FILE_PAGES)));
-	pr_cont("ns %lu\n", K(global_node_page_state_pages(NR_SHMEM)));
+	pr_cont("nf %lu\n", K(global_node_page_state_pages(NR_FILE_PAGES)));
 }
 
 struct dma_buf *dma_heap_buffer_alloc(struct dma_heap *heap, size_t len,
@@ -138,15 +136,10 @@ struct dma_buf *dma_heap_buffer_alloc(struct dma_heap *heap, size_t len,
 	unsigned long vm_events_before[ARRAY_SIZE(vm_events_item)];
 	unsigned long vm_events_after[ARRAY_SIZE(vm_events_item)];
 
-	bool vh_valid = false;
-
-	trace_android_vh_dmabuf_heap_flags_validation(heap,
-		len, fd_flags, heap_flags, &vh_valid);
-
 	if (fd_flags & ~DMA_HEAP_VALID_FD_FLAGS)
 		return ERR_PTR(-EINVAL);
 
-	if (heap_flags & ~DMA_HEAP_VALID_HEAP_FLAGS && !vh_valid)
+	if (heap_flags & ~DMA_HEAP_VALID_HEAP_FLAGS)
 		return ERR_PTR(-EINVAL);
 	/*
 	 * Allocations from all heaps have to begin
@@ -383,7 +376,7 @@ EXPORT_SYMBOL_GPL(dma_heap_get_name);
 
 struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info)
 {
-	struct dma_heap *heap, *h, *err_ret;
+	struct dma_heap *heap, *err_ret;
 	unsigned int minor;
 	int ret;
 
@@ -394,6 +387,15 @@ struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info)
 
 	if (!exp_info->ops || !exp_info->ops->allocate) {
 		pr_err("dma_heap: Cannot add heap with invalid ops struct\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	/* check the name is unique */
+	heap = dma_heap_find(exp_info->name);
+	if (heap) {
+		pr_err("dma_heap: Already registered heap named %s\n",
+		       exp_info->name);
+		dma_heap_put(heap);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -440,27 +442,13 @@ struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info)
 	/* Make sure it doesn't disappear on us */
 	heap->heap_dev = get_device(heap->heap_dev);
 
-	mutex_lock(&heap_list_lock);
-	/* check the name is unique */
-	list_for_each_entry(h, &heap_list, list) {
-		if (!strcmp(h->name, exp_info->name)) {
-			mutex_unlock(&heap_list_lock);
-			pr_err("dma_heap: Already registered heap named %s\n",
-			       exp_info->name);
-			err_ret = ERR_PTR(-EINVAL);
-			put_device(heap->heap_dev);
-			goto err3;
-		}
-	}
-
 	/* Add heap to the list */
+	mutex_lock(&heap_list_lock);
 	list_add(&heap->list, &heap_list);
 	mutex_unlock(&heap_list_lock);
 
 	return heap;
 
-err3:
-	device_destroy(dma_heap_class, heap->heap_devt);
 err2:
 	cdev_del(&heap->heap_cdev);
 err1:

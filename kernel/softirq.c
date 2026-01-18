@@ -516,7 +516,7 @@ static inline __u32 softirq_deferred_for_rt(__u32 *pending)
 	return deferred;
 }
 
-static void handle_softirqs(bool ksirqd)
+asmlinkage __visible void __softirq_entry __do_softirq(void)
 {
 	unsigned long end = jiffies + MAX_SOFTIRQ_TIME;
 	unsigned long old_flags = current->flags;
@@ -575,7 +575,8 @@ restart:
 	}
 
 	__this_cpu_write(active_softirqs, 0);
-	if (!IS_ENABLED(CONFIG_PREEMPT_RT) && ksirqd)
+	if (!IS_ENABLED(CONFIG_PREEMPT_RT) &&
+	    __this_cpu_read(ksoftirqd) == current)
 		rcu_softirq_qs();
 
 	local_irq_disable();
@@ -598,11 +599,6 @@ restart:
 	current_restore_flags(old_flags, PF_MEMALLOC);
 }
 
-asmlinkage __visible void __softirq_entry __do_softirq(void)
-{
-	handle_softirqs(false);
-}
-
 /**
  * irq_enter_rcu - Enter an interrupt context with RCU watching
  */
@@ -610,8 +606,7 @@ void irq_enter_rcu(void)
 {
 	__irq_enter_raw();
 
-	if (tick_nohz_full_cpu(smp_processor_id()) ||
-	    (is_idle_task(current) && (irq_count() == HARDIRQ_OFFSET)))
+	if (is_idle_task(current) && (irq_count() == HARDIRQ_OFFSET))
 		tick_irq_enter();
 
 	account_hardirq_enter(current);
@@ -938,7 +933,7 @@ static void run_ksoftirqd(unsigned int cpu)
 		 * We can safely run softirq on inline stack, as we are not deep
 		 * in the task stack here.
 		 */
-		handle_softirqs(true);
+		__do_softirq();
 		ksoftirqd_run_end();
 		cond_resched();
 		return;

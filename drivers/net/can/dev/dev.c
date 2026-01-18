@@ -136,12 +136,12 @@ EXPORT_SYMBOL_GPL(can_change_state);
 static void can_restart(struct net_device *dev)
 {
 	struct can_priv *priv = netdev_priv(dev);
+	struct net_device_stats *stats = &dev->stats;
 	struct sk_buff *skb;
 	struct can_frame *cf;
 	int err;
 
-	if (netif_carrier_ok(dev))
-		netdev_err(dev, "Attempt to restart for bus-off recovery, but carrier is OK?\n");
+	BUG_ON(netif_carrier_ok(dev));
 
 	/* No synchronization needed because the device is bus-off and
 	 * no messages can come in or go out.
@@ -155,6 +155,9 @@ static void can_restart(struct net_device *dev)
 
 	cf->can_id |= CAN_ERR_RESTARTED;
 
+	stats->rx_packets++;
+	stats->rx_bytes += cf->len;
+
 	netif_rx_ni(skb);
 
 restart:
@@ -162,12 +165,11 @@ restart:
 	priv->can_stats.restarts++;
 
 	/* Now restart the device */
-	netif_carrier_on(dev);
 	err = priv->do_set_mode(dev, CAN_MODE_START);
-	if (err) {
+
+	netif_carrier_on(dev);
+	if (err)
 		netdev_err(dev, "Error %d during restart", err);
-		netif_carrier_off(dev);
-	}
 }
 
 static void can_restart_work(struct work_struct *work)
@@ -409,7 +411,7 @@ static int can_set_termination(struct net_device *ndev, u16 term)
 	else
 		set = 0;
 
-	gpiod_set_value_cansleep(priv->termination_gpio, set);
+	gpiod_set_value(priv->termination_gpio, set);
 
 	return 0;
 }

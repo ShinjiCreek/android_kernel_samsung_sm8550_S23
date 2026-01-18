@@ -45,7 +45,6 @@ module_param_named(prefetch_cluster, dm_verity_prefetch_cluster, uint, S_IRUGO |
 struct dm_verity_prefetch_work {
 	struct work_struct work;
 	struct dm_verity *v;
-	unsigned short ioprio;
 	sector_t block;
 	unsigned n_blocks;
 };
@@ -286,12 +285,10 @@ static int verity_verify_level(struct dm_verity *v, struct dm_verity_io *io,
 	int r;
 	sector_t hash_block;
 	unsigned offset;
-	struct bio *bio = dm_bio_from_per_bio_data(io, v->ti->per_io_data_size);
 
 	verity_hash_at_level(v, block, level, &hash_block, &offset);
 
-	data = dm_bufio_read_with_ioprio(v->bufio, hash_block,
-					 &buf, bio_prio(bio));
+	data = dm_bufio_read(v->bufio, hash_block, &buf);
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
@@ -500,8 +497,7 @@ static int verity_verify_io(struct dm_verity_io *io)
 		sector_t cur_block = io->block + b;
 		struct ahash_request *req = verity_io_hash_req(v, io);
 
-		/* verify data block if bio->bi_status != BLK_STS_OK */
-		if (v->validated_blocks && bio->bi_status == BLK_STS_OK &&
+		if (v->validated_blocks &&
 		    likely(test_bit(cur_block, v->validated_blocks))) {
 			verity_bv_skip_block(v, io, &io->iter);
 #ifdef SEC_HEX_DEBUG
@@ -617,11 +613,8 @@ static void verity_end_io(struct bio *bio)
 {
 	struct dm_verity_io *io = bio->bi_private;
 
-	/* SEC: Do not verify RAHEAD bio if status is not OK */
 	if (bio->bi_status &&
-	    (!verity_fec_is_enabled(io->v) ||
-	     verity_is_system_shutting_down() ||
-	     (bio->bi_opf & REQ_RAHEAD))) {
+	    (!verity_fec_is_enabled(io->v) || verity_is_system_shutting_down())) {
 		verity_finish_io(io, bio->bi_status);
 		return;
 	}
@@ -663,16 +656,14 @@ static void verity_prefetch_io(struct work_struct *work)
 				hash_block_end = v->hash_blocks - 1;
 		}
 no_prefetch_cluster:
-		dm_bufio_prefetch_with_ioprio(v->bufio, hash_block_start,
-					hash_block_end - hash_block_start + 1,
-					pw->ioprio);
+		dm_bufio_prefetch(v->bufio, hash_block_start,
+				  hash_block_end - hash_block_start + 1);
 	}
 
 	kfree(pw);
 }
 
-static void verity_submit_prefetch(struct dm_verity *v, struct dm_verity_io *io,
-				   unsigned short ioprio)
+static void verity_submit_prefetch(struct dm_verity *v, struct dm_verity_io *io)
 {
 	sector_t block = io->block;
 	unsigned int n_blocks = io->n_blocks;
@@ -700,7 +691,6 @@ static void verity_submit_prefetch(struct dm_verity *v, struct dm_verity_io *io,
 	pw->v = v;
 	pw->block = block;
 	pw->n_blocks = n_blocks;
-	pw->ioprio = ioprio;
 	queue_work(v->verify_wq, &pw->work);
 }
 
@@ -752,7 +742,7 @@ static int verity_map(struct dm_target *ti, struct bio *bio)
 
 	verity_fec_init_io(io);
 
-	verity_submit_prefetch(v, io, bio_prio(bio));
+	verity_submit_prefetch(v, io);
 
 	submit_bio_noacct(bio);
 
@@ -1340,16 +1330,8 @@ static int verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 		goto bad;
 	}
 
-	/*
-	 * Using WQ_HIGHPRI improves throughput and completion latency by
-	 * reducing wait times when reading from a dm-verity device.
-	 *
-	 * Also as required for the "try_verify_in_tasklet" feature: WQ_HIGHPRI
-	 * allows verify_wq to preempt softirq since verification in tasklet
-	 * will fall-back to using it for error handling (or if the bufio cache
-	 * doesn't have required hashes).
-	 */
-	v->verify_wq = alloc_workqueue("kverityd", WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
+	/* WQ_UNBOUND greatly improves performance when running on ramdisk */
+	v->verify_wq = alloc_workqueue("kverityd", WQ_CPU_INTENSIVE | WQ_MEM_RECLAIM | WQ_UNBOUND, num_online_cpus());
 	if (!v->verify_wq) {
 		ti->error = "Cannot allocate workqueue";
 		r = -ENOMEM;
@@ -1389,7 +1371,6 @@ bad:
 
 static struct target_type verity_target = {
 	.name		= "verity",
-	.features	= DM_TARGET_IMMUTABLE,
 	.version	= {1, 8, 0},
 	.module		= THIS_MODULE,
 	.ctr		= verity_ctr,

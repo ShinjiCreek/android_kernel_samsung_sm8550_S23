@@ -101,9 +101,7 @@ void ni_clear(struct ntfs_inode *ni)
 {
 	struct rb_node *node;
 
-	if (!ni->vfs_inode.i_nlink && ni->mi.mrec &&
-	    is_rec_inuse(ni->mi.mrec) &&
-	    !(ni->mi.sbi->flags & NTFS_FLAGS_LOG_REPLAYING))
+	if (!ni->vfs_inode.i_nlink && is_rec_inuse(ni->mi.mrec))
 		ni_delete_all(ni);
 
 	al_destroy(ni);
@@ -569,12 +567,6 @@ static int ni_repack(struct ntfs_inode *ni)
 		}
 
 		roff = le16_to_cpu(attr->nres.run_off);
-
-		if (roff > le32_to_cpu(attr->size)) {
-			err = -EINVAL;
-			break;
-		}
-
 		err = run_unpack(&run, sbi, ni->mi.rno, svcn, evcn, svcn,
 				 Add2Ptr(attr, roff),
 				 le32_to_cpu(attr->size) - roff);
@@ -752,7 +744,7 @@ static int ni_try_remove_attr_list(struct ntfs_inode *ni)
 	run_deallocate(sbi, &ni->attr_list.run, true);
 	run_close(&ni->attr_list.run);
 	ni->attr_list.size = 0;
-	kvfree(ni->attr_list.le);
+	kfree(ni->attr_list.le);
 	ni->attr_list.le = NULL;
 	ni->attr_list.dirty = false;
 
@@ -851,7 +843,6 @@ int ni_create_attr_list(struct ntfs_inode *ni)
 	if (err)
 		goto out1;
 
-	err = -EINVAL;
 	/* Call mi_remove_attr() in reverse order to keep pointers 'arr_move' valid. */
 	while (to_free > 0) {
 		struct ATTRIB *b = arr_move[--nb];
@@ -860,8 +851,7 @@ int ni_create_attr_list(struct ntfs_inode *ni)
 
 		attr = mi_insert_attr(mi, b->type, Add2Ptr(b, name_off),
 				      b->name_len, asize, name_off);
-		if (!attr)
-			goto out1;
+		WARN_ON(!attr);
 
 		mi_get_ref(mi, &le_b[nb]->ref);
 		le_b[nb]->id = attr->id;
@@ -871,20 +861,17 @@ int ni_create_attr_list(struct ntfs_inode *ni)
 		attr->id = le_b[nb]->id;
 
 		/* Remove from primary record. */
-		if (!mi_remove_attr(NULL, &ni->mi, b))
-			goto out1;
+		WARN_ON(!mi_remove_attr(NULL, &ni->mi, b));
 
 		if (to_free <= asize)
 			break;
 		to_free -= asize;
-		if (!nb)
-			goto out1;
+		WARN_ON(!nb);
 	}
 
 	attr = mi_insert_attr(&ni->mi, ATTR_LIST, NULL, 0,
 			      lsize + SIZEOF_RESIDENT, SIZEOF_RESIDENT);
-	if (!attr)
-		goto out1;
+	WARN_ON(!attr);
 
 	attr->non_res = 0;
 	attr->flags = 0;
@@ -901,13 +888,12 @@ int ni_create_attr_list(struct ntfs_inode *ni)
 	goto out;
 
 out1:
-	kvfree(ni->attr_list.le);
+	kfree(ni->attr_list.le);
 	ni->attr_list.le = NULL;
 	ni->attr_list.size = 0;
-	return err;
 
 out:
-	return 0;
+	return err;
 }
 
 /*
@@ -1455,7 +1441,7 @@ int ni_insert_nonresident(struct ntfs_inode *ni, enum ATTR_TYPE type,
 
 	if (is_ext) {
 		if (flags & ATTR_FLAG_COMPRESSED)
-			attr->nres.c_unit = NTFS_LZNT_CUNIT;
+			attr->nres.c_unit = COMPRESSION_UNIT;
 		attr->nres.total_size = attr->nres.alloc_size;
 	}
 
@@ -1554,9 +1540,6 @@ int ni_delete_all(struct ntfs_inode *ni)
 
 		asize = le32_to_cpu(attr->size);
 		roff = le16_to_cpu(attr->nres.run_off);
-
-		if (roff > asize)
-			return -EINVAL;
 
 		/* run==1 means unpack and deallocate. */
 		run_unpack_ex(RUN_DEALLOCATE, sbi, ni->mi.rno, svcn, evcn, svcn,
@@ -1981,8 +1964,10 @@ int ni_fiemap(struct ntfs_inode *ni, struct fiemap_extent_info *fieinfo,
 
 		vcn += clen;
 
-		if (vbo + bytes >= end)
+		if (vbo + bytes >= end) {
 			bytes = end - vbo;
+			flags |= FIEMAP_EXTENT_LAST;
+		}
 
 		if (vbo + bytes <= valid) {
 			;
@@ -1991,9 +1976,6 @@ int ni_fiemap(struct ntfs_inode *ni, struct fiemap_extent_info *fieinfo,
 		} else {
 			/* vbo < valid && valid < vbo + bytes */
 			u64 dlen = valid - vbo;
-
-			if (vbo + dlen >= end)
-				flags |= FIEMAP_EXTENT_LAST;
 
 			err = fiemap_fill_next_extent(fieinfo, vbo, lbo, dlen,
 						      flags);
@@ -2012,9 +1994,6 @@ int ni_fiemap(struct ntfs_inode *ni, struct fiemap_extent_info *fieinfo,
 			lbo += dlen;
 			flags |= FIEMAP_EXTENT_UNWRITTEN;
 		}
-
-		if (vbo + bytes >= end)
-			flags |= FIEMAP_EXTENT_LAST;
 
 		err = fiemap_fill_next_extent(fieinfo, vbo, lbo, bytes, flags);
 		if (err < 0)
@@ -2102,7 +2081,7 @@ out1:
 
 	for (i = 0; i < pages_per_frame; i++) {
 		pg = pages[i];
-		if (i == idx || !pg)
+		if (i == idx)
 			continue;
 		unlock_page(pg);
 		put_page(pg);
@@ -2258,11 +2237,6 @@ remove_wof:
 
 		asize = le32_to_cpu(attr->size);
 		roff = le16_to_cpu(attr->nres.run_off);
-
-		if (roff > asize) {
-			err = -EINVAL;
-			goto out;
-		}
 
 		/*run==1  Means unpack and deallocate. */
 		run_unpack_ex(RUN_DEALLOCATE, sbi, ni->mi.rno, svcn, evcn, svcn,
@@ -3146,12 +3120,6 @@ static bool ni_update_parent(struct ntfs_inode *ni, struct NTFS_DUP_INFO *dup,
 		if (!fname || !memcmp(&fname->dup, dup, sizeof(fname->dup)))
 			continue;
 
-		/* Check simple case when parent inode equals current inode. */
-		if (ino_get(&fname->home) == ni->vfs_inode.i_ino) {
-			ntfs_set_state(sbi, NTFS_DIRTY_ERROR);
-			continue;
-		}
-
 		/* ntfs_iget5 may sleep. */
 		dir = ntfs_iget5(sb, &fname->home, NULL);
 		if (IS_ERR(dir)) {
@@ -3202,9 +3170,6 @@ int ni_write_inode(struct inode *inode, int sync, const char *hint)
 		mark_inode_dirty_sync(inode);
 		return 0;
 	}
-
-	if (!ni->mi.mrec)
-		goto out;
 
 	if (is_rec_inuse(ni->mi.mrec) &&
 	    !(sbi->flags & NTFS_FLAGS_LOG_REPLAYING) && inode->i_nlink) {

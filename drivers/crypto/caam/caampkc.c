@@ -223,9 +223,7 @@ static int caam_rsa_count_leading_zeros(struct scatterlist *sgl,
 		if (len && *buff)
 			break;
 
-		if (!sg_miter_next(&miter))
-			break;
-
+		sg_miter_next(&miter);
 		buff = miter.addr;
 		len = miter.length;
 
@@ -979,7 +977,7 @@ err:
 	return -ENOMEM;
 }
 
-static int caam_rsa_set_priv_key_form(struct caam_rsa_ctx *ctx,
+static void caam_rsa_set_priv_key_form(struct caam_rsa_ctx *ctx,
 				       struct rsa_key *raw_key)
 {
 	struct caam_rsa_key *rsa_key = &ctx->key;
@@ -988,7 +986,7 @@ static int caam_rsa_set_priv_key_form(struct caam_rsa_ctx *ctx,
 
 	rsa_key->p = caam_read_raw_data(raw_key->p, &p_sz);
 	if (!rsa_key->p)
-		return -ENOMEM;
+		return;
 	rsa_key->p_sz = p_sz;
 
 	rsa_key->q = caam_read_raw_data(raw_key->q, &q_sz);
@@ -1021,7 +1019,7 @@ static int caam_rsa_set_priv_key_form(struct caam_rsa_ctx *ctx,
 
 	rsa_key->priv_form = FORM3;
 
-	return 0;
+	return;
 
 free_dq:
 	kfree_sensitive(rsa_key->dq);
@@ -1035,7 +1033,6 @@ free_q:
 	kfree_sensitive(rsa_key->q);
 free_p:
 	kfree_sensitive(rsa_key->p);
-	return -ENOMEM;
 }
 
 static int caam_rsa_set_priv_key(struct crypto_akcipher *tfm, const void *key,
@@ -1081,9 +1078,7 @@ static int caam_rsa_set_priv_key(struct crypto_akcipher *tfm, const void *key,
 	rsa_key->e_sz = raw_key.e_sz;
 	rsa_key->n_sz = raw_key.n_sz;
 
-	ret = caam_rsa_set_priv_key_form(ctx, &raw_key);
-	if (ret)
-		goto err;
+	caam_rsa_set_priv_key_form(ctx, &raw_key);
 
 	return 0;
 

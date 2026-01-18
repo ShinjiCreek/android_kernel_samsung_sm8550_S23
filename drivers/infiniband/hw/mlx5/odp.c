@@ -704,8 +704,10 @@ static int pagefault_dmabuf_mr(struct mlx5_ib_mr *mr, size_t bcnt,
 		return err;
 	}
 
-	page_size = mlx5_umem_dmabuf_find_best_pgsz(umem_dmabuf);
-	if (!page_size) {
+	page_size = mlx5_umem_find_best_pgsz(&umem_dmabuf->umem, mkc,
+					     log_page_size, 0,
+					     umem_dmabuf->umem.iova);
+	if (unlikely(page_size < PAGE_SIZE)) {
 		ib_umem_dmabuf_unmap_pages(umem_dmabuf);
 		err = -EINVAL;
 	} else {
@@ -790,8 +792,7 @@ static bool mkey_is_eq(struct mlx5_core_mkey *mmkey, u32 key)
 {
 	if (!mmkey)
 		return false;
-	if (mmkey->type == MLX5_MKEY_MW ||
-	    mmkey->type == MLX5_MKEY_INDIRECT_DEVX)
+	if (mmkey->type == MLX5_MKEY_MW)
 		return mlx5_base_mkey(mmkey->key) == mlx5_base_mkey(key);
 	return mmkey->key == key;
 }

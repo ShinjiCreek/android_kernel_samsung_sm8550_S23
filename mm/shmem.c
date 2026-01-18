@@ -1756,7 +1756,6 @@ static int shmem_swapin_page(struct inode *inode, pgoff_t index,
 
 	/* We have to do this with page locked to prevent races */
 	lock_page(page);
-	trace_android_vh_shmem_swapin_page(page);
 	if (!PageSwapCache(page) || page_private(page) != swap.val ||
 	    !shmem_confirm_swap(mapping, index, swap)) {
 		error = -EEXIST;
@@ -2279,6 +2278,9 @@ static int shmem_mmap(struct file *file, struct vm_area_struct *vma)
 	if (ret)
 		return ret;
 
+	/* arm64 - allow memory tagging on RAM-based files */
+	vma->vm_flags |= VM_MTE_ALLOWED;
+
 	file_accessed(file);
 	vma->vm_ops = &shmem_vm_ops;
 	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
@@ -2473,7 +2475,6 @@ shmem_write_begin(struct file *file, struct address_space *mapping,
 	struct inode *inode = mapping->host;
 	struct shmem_inode_info *info = SHMEM_I(inode);
 	pgoff_t index = pos >> PAGE_SHIFT;
-	int ret = 0;
 
 	/* i_rwsem is held by caller */
 	if (unlikely(info->seals & (F_SEAL_GROW |
@@ -2484,19 +2485,7 @@ shmem_write_begin(struct file *file, struct address_space *mapping,
 			return -EPERM;
 	}
 
-	ret = shmem_getpage(inode, index, pagep, SGP_WRITE);
-
-	if (ret)
-		return ret;
-
-	if (PageHWPoison(*pagep)) {
-		unlock_page(*pagep);
-		put_page(*pagep);
-		*pagep = NULL;
-		return -EIO;
-	}
-
-	return 0;
+	return shmem_getpage(inode, index, pagep, SGP_WRITE);
 }
 
 static int
@@ -2583,12 +2572,6 @@ static ssize_t shmem_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 			if (sgp == SGP_CACHE)
 				set_page_dirty(page);
 			unlock_page(page);
-
-			if (PageHWPoison(page)) {
-				put_page(page);
-				error = -EIO;
-				break;
-			}
 		}
 
 		/*
@@ -3150,8 +3133,7 @@ static const char *shmem_get_link(struct dentry *dentry,
 		page = find_get_page(inode->i_mapping, 0);
 		if (!page)
 			return ERR_PTR(-ECHILD);
-		if (PageHWPoison(page) ||
-		    !PageUptodate(page)) {
+		if (!PageUptodate(page)) {
 			put_page(page);
 			return ERR_PTR(-ECHILD);
 		}
@@ -3159,13 +3141,6 @@ static const char *shmem_get_link(struct dentry *dentry,
 		error = shmem_getpage(inode, 0, &page, SGP_READ);
 		if (error)
 			return ERR_PTR(error);
-		if (!page)
-			return ERR_PTR(-ECHILD);
-		if (PageHWPoison(page)) {
-			unlock_page(page);
-			put_page(page);
-			return ERR_PTR(-ECHILD);
-		}
 		unlock_page(page);
 	}
 	set_delayed_call(done, shmem_put_link, page);
@@ -3404,8 +3379,6 @@ static int shmem_parse_one(struct fs_context *fc, struct fs_parameter *param)
 	unsigned long long size;
 	char *rest;
 	int opt;
-	kuid_t kuid;
-	kgid_t kgid;
 
 	opt = fs_parse(fc, shmem_fs_parameters, param, &result);
 	if (opt < 0)
@@ -3441,32 +3414,14 @@ static int shmem_parse_one(struct fs_context *fc, struct fs_parameter *param)
 		ctx->mode = result.uint_32 & 07777;
 		break;
 	case Opt_uid:
-		kuid = make_kuid(current_user_ns(), result.uint_32);
-		if (!uid_valid(kuid))
+		ctx->uid = make_kuid(current_user_ns(), result.uint_32);
+		if (!uid_valid(ctx->uid))
 			goto bad_value;
-
-		/*
-		 * The requested uid must be representable in the
-		 * filesystem's idmapping.
-		 */
-		if (!kuid_has_mapping(fc->user_ns, kuid))
-			goto bad_value;
-
-		ctx->uid = kuid;
 		break;
 	case Opt_gid:
-		kgid = make_kgid(current_user_ns(), result.uint_32);
-		if (!gid_valid(kgid))
+		ctx->gid = make_kgid(current_user_ns(), result.uint_32);
+		if (!gid_valid(ctx->gid))
 			goto bad_value;
-
-		/*
-		 * The requested gid must be representable in the
-		 * filesystem's idmapping.
-		 */
-		if (!kgid_has_mapping(fc->user_ns, kgid))
-			goto bad_value;
-
-		ctx->gid = kgid;
 		break;
 	case Opt_huge:
 		ctx->huge = result.uint_32;
@@ -3836,13 +3791,6 @@ static void shmem_destroy_inodecache(void)
 	kmem_cache_destroy(shmem_inode_cachep);
 }
 
-/* Keep the page in page cache instead of truncating it */
-static int shmem_error_remove_page(struct address_space *mapping,
-				   struct page *page)
-{
-	return 0;
-}
-
 const struct address_space_operations shmem_aops = {
 	.writepage	= shmem_writepage,
 	.set_page_dirty	= __set_page_dirty_no_writeback,
@@ -3853,7 +3801,7 @@ const struct address_space_operations shmem_aops = {
 #ifdef CONFIG_MIGRATION
 	.migratepage	= migrate_page,
 #endif
-	.error_remove_page = shmem_error_remove_page,
+	.error_remove_page = generic_error_remove_page,
 };
 EXPORT_SYMBOL(shmem_aops);
 
@@ -4073,7 +4021,7 @@ static struct file_system_type shmem_fs_type = {
 	.name		= "tmpfs",
 	.init_fs_context = ramfs_init_fs_context,
 	.parameters	= ramfs_fs_parameters,
-	.kill_sb	= ramfs_kill_sb,
+	.kill_sb	= kill_litter_super,
 	.fs_flags	= FS_USERNS_MOUNT,
 };
 
@@ -4261,14 +4209,9 @@ struct page *shmem_read_mapping_page_gfp(struct address_space *mapping,
 	error = shmem_getpage_gfp(inode, index, &page, SGP_CACHE,
 				  gfp, NULL, NULL, NULL);
 	if (error)
-		return ERR_PTR(error);
-
-	unlock_page(page);
-	if (PageHWPoison(page)) {
-		put_page(page);
-		return ERR_PTR(-EIO);
-	}
-
+		page = ERR_PTR(error);
+	else
+		unlock_page(page);
 	return page;
 #else
 	/*

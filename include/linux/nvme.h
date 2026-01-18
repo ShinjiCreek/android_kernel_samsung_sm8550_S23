@@ -7,7 +7,6 @@
 #ifndef _LINUX_NVME_H
 #define _LINUX_NVME_H
 
-#include <linux/bits.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
 
@@ -71,8 +70,8 @@ enum {
 	NVMF_RDMA_QPTYPE_DATAGRAM	= 2, /* Reliable Datagram */
 };
 
-/* RDMA Provider Type codes for Discovery Log Page entry TSAS
- * RDMA_PRTYPE field
+/* RDMA QP Service Type codes for Discovery Log Page entry TSAS
+ * RDMA_QPTYPE field
  */
 enum {
 	NVMF_RDMA_PRTYPE_NOT_SPECIFIED	= 1, /* No Provider Specified */
@@ -540,7 +539,7 @@ enum {
 	NVME_CMD_EFFECTS_NCC		= 1 << 2,
 	NVME_CMD_EFFECTS_NIC		= 1 << 3,
 	NVME_CMD_EFFECTS_CCC		= 1 << 4,
-	NVME_CMD_EFFECTS_CSE_MASK	= GENMASK(18, 16),
+	NVME_CMD_EFFECTS_CSE_MASK	= 3 << 16,
 	NVME_CMD_EFFECTS_UUID_SEL	= 1 << 19,
 };
 
@@ -611,10 +610,6 @@ enum {
 	NVME_AER_NOTICE			= 2,
 	NVME_AER_CSS			= 6,
 	NVME_AER_VS			= 7,
-};
-
-enum {
-	NVME_AER_ERROR_PERSIST_INT_ERR	= 0x03,
 };
 
 enum {

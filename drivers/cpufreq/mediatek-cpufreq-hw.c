@@ -10,15 +10,9 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
-#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
-#if defined(CONFIG_TRACEPOINTS) && defined(CONFIG_ANDROID_VENDOR_HOOKS)
-#include <linux/device.h>
-#include <trace/hooks/cpufreq.h>
-#endif
 
 #define LUT_MAX_ENTRIES			32U
 #define LUT_FREQ			GENMASK(11, 0)
@@ -64,7 +58,7 @@ mtk_cpufreq_get_cpu_power(unsigned long *mW,
 
 	policy = cpufreq_cpu_get_raw(cpu_dev->id);
 	if (!policy)
-		return -EINVAL;
+		return 0;
 
 	data = policy->driver_data;
 
@@ -255,13 +249,6 @@ static void mtk_cpufreq_register_em(struct cpufreq_policy *policy)
 				    &em_cb, policy->cpus, true);
 }
 
-#if defined(CONFIG_TRACEPOINTS) && defined(CONFIG_ANDROID_VENDOR_HOOKS)
-static void mtk_cpufreq_suppress(void *data, struct device *dev, int val)
-{
-	dev_set_uevent_suppress(dev, val);
-}
-#endif
-
 static struct cpufreq_driver cpufreq_mtk_hw_driver = {
 	.flags		= CPUFREQ_NEED_INITIAL_FREQ_CHECK |
 			  CPUFREQ_HAVE_GOVERNOR_PER_POLICY |
@@ -280,23 +267,7 @@ static struct cpufreq_driver cpufreq_mtk_hw_driver = {
 static int mtk_cpufreq_hw_driver_probe(struct platform_device *pdev)
 {
 	const void *data;
-	int ret, cpu;
-	struct device *cpu_dev;
-	struct regulator *cpu_reg;
-
-	/* Make sure that all CPU supplies are available before proceeding. */
-	for_each_possible_cpu(cpu) {
-		cpu_dev = get_cpu_device(cpu);
-		if (!cpu_dev)
-			return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
-					     "Failed to get cpu%d device\n", cpu);
-
-		cpu_reg = devm_regulator_get(cpu_dev, "cpu");
-		if (IS_ERR(cpu_reg))
-			return dev_err_probe(&pdev->dev, PTR_ERR(cpu_reg),
-					     "CPU%d regulator get failed\n", cpu);
-	}
-
+	int ret;
 
 	data = of_device_get_match_data(&pdev->dev);
 	if (!data)
@@ -308,10 +279,6 @@ static int mtk_cpufreq_hw_driver_probe(struct platform_device *pdev)
 	ret = cpufreq_register_driver(&cpufreq_mtk_hw_driver);
 	if (ret)
 		dev_err(&pdev->dev, "CPUFreq HW driver failed to register\n");
-
-#if defined(CONFIG_TRACEPOINTS) && defined(CONFIG_ANDROID_VENDOR_HOOKS)
-	ret = register_trace_android_vh_cpufreq_offline(mtk_cpufreq_suppress, NULL);
-#endif
 
 	return ret;
 }

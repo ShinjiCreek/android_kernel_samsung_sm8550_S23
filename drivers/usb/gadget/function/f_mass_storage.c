@@ -623,37 +623,21 @@ static int start_transfer(struct fsg_dev *fsg, struct usb_ep *ep,
 
 static bool start_in_transfer(struct fsg_common *common, struct fsg_buffhd *bh)
 {
-	int rc;
-
 	if (!fsg_is_set(common))
 		return false;
 	bh->state = BUF_STATE_SENDING;
-	rc = start_transfer(common->fsg, common->fsg->bulk_in, bh->inreq);
-	if (rc) {
+	if (start_transfer(common->fsg, common->fsg->bulk_in, bh->inreq))
 		bh->state = BUF_STATE_EMPTY;
-		if (rc == -ESHUTDOWN) {
-			common->running = 0;
-			return false;
-		}
-	}
 	return true;
 }
 
 static bool start_out_transfer(struct fsg_common *common, struct fsg_buffhd *bh)
 {
-	int rc;
-
 	if (!fsg_is_set(common))
 		return false;
 	bh->state = BUF_STATE_RECEIVING;
-	rc = start_transfer(common->fsg, common->fsg->bulk_out, bh->outreq);
-	if (rc) {
+	if (start_transfer(common->fsg, common->fsg->bulk_out, bh->outreq))
 		bh->state = BUF_STATE_FULL;
-		if (rc == -ESHUTDOWN) {
-			common->running = 0;
-			return false;
-		}
-	}
 	return true;
 }
 
@@ -1174,7 +1158,7 @@ static void invalidate_sub(struct fsg_lun *curlun)
 {
 	struct file	*filp = curlun->filp;
 	struct inode	*inode = file_inode(filp);
-	unsigned long __maybe_unused	rc;
+	unsigned long	rc;
 
 	rc = invalidate_mapping_pages(inode->i_mapping, 0, -1);
 	VLDBG(curlun, "invalidate_mapping_pages -> %ld\n", rc);
@@ -1432,14 +1416,13 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 	u8		format;
 	int		i, len;
 
-	format = common->cmnd[2] & 0xf;
-
 	if ((common->cmnd[1] & ~0x02) != 0 ||	/* Mask away MSF */
-			(start_track > 1 && format != 0x1)) {
+			start_track > 1) {
 		curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
 		return -EINVAL;
 	}
 
+	format = common->cmnd[2] & 0xf;
 	/*
 	 * Check if CDB is old style SFF-8020i
 	 * i.e. format is in 2 MSBs of byte 9
@@ -1449,8 +1432,8 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 		format = (common->cmnd[9] >> 6) & 0x3;
 
 	switch (format) {
-	case 0:	/* Formatted TOC */
-	case 1:	/* Multi-session info */
+	case 0:
+		/* Formatted TOC */
 		len = 4 + 2*8;		/* 4 byte header + 2 descriptors */
 		memset(buf, 0, len);
 		buf[1] = len - 2;	/* TOC Length excludes length field */
@@ -1491,7 +1474,7 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 		return len;
 
 	default:
-		/* PMA, ATIP, CD-TEXT not supported/required */
+		/* Multi-session, PMA, ATIP, CD-TEXT not supported/required */
 		curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
 		return -EINVAL;
 	}

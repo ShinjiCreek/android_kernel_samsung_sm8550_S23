@@ -333,7 +333,7 @@ unsigned long txn_affinity_addr(unsigned int irq, int cpu)
 {
 #ifdef CONFIG_SMP
 	struct irq_data *d = irq_get_irq_data(irq);
-	irq_data_update_affinity(d, cpumask_of(cpu));
+	cpumask_copy(irq_data_get_affinity_mask(d), cpumask_of(cpu));
 #endif
 
 	return per_cpu(cpu_data, cpu).txn_addr;
@@ -386,7 +386,7 @@ union irq_stack_union {
 	volatile unsigned int lock[1];
 };
 
-static DEFINE_PER_CPU(union irq_stack_union, irq_stack_union) = {
+DEFINE_PER_CPU(union irq_stack_union, irq_stack_union) = {
 		.slock = { 1,1,1,1 },
 	};
 #endif
@@ -518,7 +518,7 @@ void do_cpu_irq_mask(struct pt_regs *regs)
 
 	old_regs = set_irq_regs(regs);
 	local_irq_disable();
-	irq_enter_rcu();
+	irq_enter();
 
 	eirr_val = mfctl(23) & cpu_eiem & per_cpu(local_ack_eiem, cpu);
 	if (!eirr_val)
@@ -553,7 +553,7 @@ void do_cpu_irq_mask(struct pt_regs *regs)
 #endif /* CONFIG_IRQSTACKS */
 
  out:
-	irq_exit_rcu();
+	irq_exit();
 	set_irq_regs(old_regs);
 	return;
 

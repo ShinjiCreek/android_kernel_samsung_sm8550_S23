@@ -119,22 +119,20 @@
  *		- v0.1  start from toshiba_acpi driver written by John Belmonte
  */
 
-#include <linux/acpi.h>
-#include <linux/backlight.h>
-#include <linux/ctype.h>
-#include <linux/i8042.h>
-#include <linux/init.h>
-#include <linux/input.h>
-#include <linux/input/sparse-keymap.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
-#include <linux/seq_file.h>
-#include <linux/serio.h>
-#include <linux/slab.h>
+#include <linux/init.h>
 #include <linux/types.h>
+#include <linux/backlight.h>
+#include <linux/ctype.h>
+#include <linux/seq_file.h>
 #include <linux/uaccess.h>
-#include <acpi/video.h>
+#include <linux/slab.h>
+#include <linux/acpi.h>
+#include <linux/input.h>
+#include <linux/input/sparse-keymap.h>
+#include <linux/platform_device.h>
+
 
 MODULE_AUTHOR("Hiroshi Miura <miura@da-cha.org>");
 MODULE_AUTHOR("David Bronaugh <dbronaugh@linuxboxen.org>");
@@ -243,42 +241,6 @@ struct pcc_acpi {
 	struct platform_device	*platform;
 };
 
-/*
- * On some Panasonic models the volume up / down / mute keys send duplicate
- * keypress events over the PS/2 kbd interface, filter these out.
- */
-static bool panasonic_i8042_filter(unsigned char data, unsigned char str,
-				   struct serio *port)
-{
-	static bool extended;
-
-	if (str & I8042_STR_AUXDATA)
-		return false;
-
-	if (data == 0xe0) {
-		extended = true;
-		return true;
-	} else if (extended) {
-		extended = false;
-
-		switch (data & 0x7f) {
-		case 0x20: /* e0 20 / e0 a0, Volume Mute press / release */
-		case 0x2e: /* e0 2e / e0 ae, Volume Down press / release */
-		case 0x30: /* e0 30 / e0 b0, Volume Up press / release */
-			return true;
-		default:
-			/*
-			 * Report the previously filtered e0 before continuing
-			 * with the next non-filtered byte.
-			 */
-			serio_interrupt(port, 0xe0, 0);
-			return false;
-		}
-	}
-
-	return false;
-}
-
 /* method access functions */
 static int acpi_pcc_write_sset(struct pcc_acpi *pcc, int func, int val)
 {
@@ -337,8 +299,7 @@ static int acpi_pcc_retrieve_biosdata(struct pcc_acpi *pcc)
 	}
 
 	if (pcc->num_sifr < hkey->package.count) {
-		pr_err("SQTY reports bad SINF length SQTY: %lu SINF-pkg-count: %u\n",
-		       pcc->num_sifr, hkey->package.count);
+		pr_err("SQTY reports bad SINF length\n");
 		status = AE_ERROR;
 		goto end;
 	}
@@ -509,7 +470,7 @@ static ssize_t numbatt_show(struct device *dev, struct device_attribute *attr,
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_NUM_BATTERIES]);
+	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_NUM_BATTERIES]);
 }
 
 static ssize_t lcdtype_show(struct device *dev, struct device_attribute *attr,
@@ -521,7 +482,7 @@ static ssize_t lcdtype_show(struct device *dev, struct device_attribute *attr,
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_LCD_TYPE]);
+	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_LCD_TYPE]);
 }
 
 static ssize_t mute_show(struct device *dev, struct device_attribute *attr,
@@ -533,7 +494,7 @@ static ssize_t mute_show(struct device *dev, struct device_attribute *attr,
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_MUTE]);
+	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_MUTE]);
 }
 
 static ssize_t mute_store(struct device *dev, struct device_attribute *attr,
@@ -563,7 +524,7 @@ static ssize_t sticky_key_show(struct device *dev, struct device_attribute *attr
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return sysfs_emit(buf, "%u\n", pcc->sticky_key);
+	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sticky_key);
 }
 
 static ssize_t sticky_key_store(struct device *dev, struct device_attribute *attr,
@@ -602,9 +563,10 @@ static ssize_t eco_mode_show(struct device *dev, struct device_attribute *attr,
 		result = 1;
 		break;
 	default:
-		return -EIO;
+		result = -EIO;
+		break;
 	}
-	return sysfs_emit(buf, "%u\n", result);
+	return snprintf(buf, PAGE_SIZE, "%u\n", result);
 }
 
 static ssize_t eco_mode_store(struct device *dev, struct device_attribute *attr,
@@ -663,7 +625,7 @@ static ssize_t ac_brightness_show(struct device *dev, struct device_attribute *a
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_AC_CUR_BRIGHT]);
+	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_AC_CUR_BRIGHT]);
 }
 
 static ssize_t ac_brightness_store(struct device *dev, struct device_attribute *attr,
@@ -693,7 +655,7 @@ static ssize_t dc_brightness_show(struct device *dev, struct device_attribute *a
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_DC_CUR_BRIGHT]);
+	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_DC_CUR_BRIGHT]);
 }
 
 static ssize_t dc_brightness_store(struct device *dev, struct device_attribute *attr,
@@ -723,7 +685,7 @@ static ssize_t current_brightness_show(struct device *dev, struct device_attribu
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_CUR_BRIGHT]);
+	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_CUR_BRIGHT]);
 }
 
 static ssize_t current_brightness_store(struct device *dev, struct device_attribute *attr,
@@ -748,12 +710,7 @@ static ssize_t current_brightness_store(struct device *dev, struct device_attrib
 static ssize_t cdpower_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
-	int state = get_optd_power_state();
-
-	if (state < 0)
-		return state;
-
-	return sysfs_emit(buf, "%d\n", state);
+	return snprintf(buf, PAGE_SIZE, "%d\n", get_optd_power_state());
 }
 
 static ssize_t cdpower_store(struct device *dev, struct device_attribute *attr,
@@ -778,24 +735,6 @@ static DEVICE_ATTR_RW(dc_brightness);
 static DEVICE_ATTR_RW(current_brightness);
 static DEVICE_ATTR_RW(cdpower);
 
-static umode_t pcc_sysfs_is_visible(struct kobject *kobj, struct attribute *attr, int idx)
-{
-	struct device *dev = kobj_to_dev(kobj);
-	struct acpi_device *acpi = to_acpi_device(dev);
-	struct pcc_acpi *pcc = acpi_driver_data(acpi);
-
-	if (attr == &dev_attr_mute.attr)
-		return (pcc->num_sifr > SINF_MUTE) ? attr->mode : 0;
-
-	if (attr == &dev_attr_eco_mode.attr)
-		return (pcc->num_sifr > SINF_ECO_MODE) ? attr->mode : 0;
-
-	if (attr == &dev_attr_current_brightness.attr)
-		return (pcc->num_sifr > SINF_CUR_BRIGHT) ? attr->mode : 0;
-
-	return attr->mode;
-}
-
 static struct attribute *pcc_sysfs_entries[] = {
 	&dev_attr_numbatt.attr,
 	&dev_attr_lcdtype.attr,
@@ -810,9 +749,8 @@ static struct attribute *pcc_sysfs_entries[] = {
 };
 
 static const struct attribute_group pcc_attr_group = {
-	.name		= NULL,		/* put in device directory */
-	.attrs		= pcc_sysfs_entries,
-	.is_visible	= pcc_sysfs_is_visible,
+	.name	= NULL,		/* put in device directory */
+	.attrs	= pcc_sysfs_entries,
 };
 
 
@@ -824,8 +762,6 @@ static void acpi_pcc_generate_keyinput(struct pcc_acpi *pcc)
 	struct input_dev *hotk_input_dev = pcc->input_dev;
 	int rc;
 	unsigned long long result;
-	unsigned int key;
-	unsigned int updown;
 
 	rc = acpi_evaluate_integer(pcc->handle, METHOD_HKEY_QUERY,
 				   NULL, &result);
@@ -834,27 +770,20 @@ static void acpi_pcc_generate_keyinput(struct pcc_acpi *pcc)
 		return;
 	}
 
-	key = result & 0xf;
-	updown = result & 0x80; /* 0x80 == key down; 0x00 = key up */
-
 	/* hack: some firmware sends no key down for sleep / hibernate */
-	if (key == 7 || key == 10) {
-		if (updown)
+	if ((result & 0xf) == 0x7 || (result & 0xf) == 0xa) {
+		if (result & 0x80)
 			sleep_keydown_seen = 1;
 		if (!sleep_keydown_seen)
 			sparse_keymap_report_event(hotk_input_dev,
-					key, 0x80, false);
+					result & 0xf, 0x80, false);
 	}
 
-	/*
-	 * Don't report brightness key-presses if they are also reported
-	 * by the ACPI video bus.
-	 */
-	if ((key == 1 || key == 2) && acpi_video_handles_brightness_key_presses())
-		return;
-
-	if (!sparse_keymap_report_event(hotk_input_dev, key, updown, false))
-		pr_err("Unknown hotkey event: 0x%04llx\n", result);
+	if ((result & 0xf) == 0x7 || (result & 0xf) == 0x9 || (result & 0xf) == 0xa) {
+		if (!sparse_keymap_report_event(hotk_input_dev,
+						result & 0xf, result & 0x80, false))
+			pr_err("Unknown hotkey event: 0x%04llx\n", result);
+	}
 }
 
 static void acpi_pcc_hotkey_notify(struct acpi_device *device, u32 event)
@@ -965,15 +894,12 @@ static int acpi_pcc_hotkey_resume(struct device *dev)
 	if (!pcc)
 		return -EINVAL;
 
-	if (pcc->num_sifr > SINF_MUTE)
-		acpi_pcc_write_sset(pcc, SINF_MUTE, pcc->mute);
-	if (pcc->num_sifr > SINF_ECO_MODE)
-		acpi_pcc_write_sset(pcc, SINF_ECO_MODE, pcc->eco_mode);
+	acpi_pcc_write_sset(pcc, SINF_MUTE, pcc->mute);
+	acpi_pcc_write_sset(pcc, SINF_ECO_MODE, pcc->eco_mode);
 	acpi_pcc_write_sset(pcc, SINF_STICKY_KEY, pcc->sticky_key);
 	acpi_pcc_write_sset(pcc, SINF_AC_CUR_BRIGHT, pcc->ac_brightness);
 	acpi_pcc_write_sset(pcc, SINF_DC_CUR_BRIGHT, pcc->dc_brightness);
-	if (pcc->num_sifr > SINF_CUR_BRIGHT)
-		acpi_pcc_write_sset(pcc, SINF_CUR_BRIGHT, pcc->current_brightness);
+	acpi_pcc_write_sset(pcc, SINF_CUR_BRIGHT, pcc->current_brightness);
 
 	return 0;
 }
@@ -990,20 +916,10 @@ static int acpi_pcc_hotkey_add(struct acpi_device *device)
 
 	num_sifr = acpi_pcc_get_sqty(device);
 
-	/*
-	 * pcc->sinf is expected to at least have the AC+DC brightness entries.
-	 * Accesses to higher SINF entries are checked against num_sifr.
-	 */
-	if (num_sifr <= SINF_DC_CUR_BRIGHT || num_sifr > 255) {
-		pr_err("num_sifr %d out of range %d - 255\n", num_sifr, SINF_DC_CUR_BRIGHT + 1);
+	if (num_sifr < 0 || num_sifr > 255) {
+		pr_err("num_sifr out of range");
 		return -ENODEV;
 	}
-
-	/*
-	 * Some DSDT-s have an off-by-one bug where the SINF package count is
-	 * one higher than the SQTY reported value, allocate 1 entry extra.
-	 */
-	num_sifr++;
 
 	pcc = kzalloc(sizeof(struct pcc_acpi), GFP_KERNEL);
 	if (!pcc) {
@@ -1053,14 +969,11 @@ static int acpi_pcc_hotkey_add(struct acpi_device *device)
 	acpi_pcc_write_sset(pcc, SINF_STICKY_KEY, 0);
 	pcc->sticky_key = 0;
 
+	pcc->eco_mode = pcc->sinf[SINF_ECO_MODE];
+	pcc->mute = pcc->sinf[SINF_MUTE];
 	pcc->ac_brightness = pcc->sinf[SINF_AC_CUR_BRIGHT];
 	pcc->dc_brightness = pcc->sinf[SINF_DC_CUR_BRIGHT];
-	if (pcc->num_sifr > SINF_MUTE)
-		pcc->mute = pcc->sinf[SINF_MUTE];
-	if (pcc->num_sifr > SINF_ECO_MODE)
-		pcc->eco_mode = pcc->sinf[SINF_ECO_MODE];
-	if (pcc->num_sifr > SINF_CUR_BRIGHT)
-		pcc->current_brightness = pcc->sinf[SINF_CUR_BRIGHT];
+	pcc->current_brightness = pcc->sinf[SINF_CUR_BRIGHT];
 
 	/* add sysfs attributes */
 	result = sysfs_create_group(&device->dev.kobj, &pcc_attr_group);
@@ -1084,7 +997,6 @@ static int acpi_pcc_hotkey_add(struct acpi_device *device)
 		pcc->platform = NULL;
 	}
 
-	i8042_install_filter(panasonic_i8042_filter);
 	return 0;
 
 out_platform:
@@ -1107,8 +1019,6 @@ static int acpi_pcc_hotkey_remove(struct acpi_device *device)
 
 	if (!device || !pcc)
 		return -EINVAL;
-
-	i8042_remove_filter(panasonic_i8042_filter);
 
 	if (pcc->platform) {
 		device_remove_file(&pcc->platform->dev, &dev_attr_cdpower);

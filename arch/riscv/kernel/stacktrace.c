@@ -18,23 +18,10 @@ register unsigned long sp_in_global __asm__("sp");
 
 #ifdef CONFIG_FRAME_POINTER
 
-extern asmlinkage void ret_from_exception(void);
-
-static inline int fp_is_valid(unsigned long fp, unsigned long sp)
-{
-	unsigned long low, high;
-
-	low = sp + sizeof(struct stackframe);
-	high = ALIGN(sp, THREAD_SIZE);
-
-	return !(fp < low || fp > high || fp & 0x07);
-}
-
 void notrace walk_stackframe(struct task_struct *task, struct pt_regs *regs,
 			     bool (*fn)(void *, unsigned long), void *arg)
 {
 	unsigned long fp, sp, pc;
-	int graph_idx = 0;
 	int level = 0;
 
 	if (regs) {
@@ -45,7 +32,6 @@ void notrace walk_stackframe(struct task_struct *task, struct pt_regs *regs,
 		fp = (unsigned long)__builtin_frame_address(0);
 		sp = sp_in_global;
 		pc = (unsigned long)walk_stackframe;
-		level = -1;
 	} else {
 		/* task blocked in __switch_to */
 		fp = task->thread.s[0];
@@ -54,32 +40,27 @@ void notrace walk_stackframe(struct task_struct *task, struct pt_regs *regs,
 	}
 
 	for (;;) {
+		unsigned long low, high;
 		struct stackframe *frame;
 
-		if (unlikely(!__kernel_text_address(pc) || (level++ >= 0 && !fn(arg, pc))))
+		if (unlikely(!__kernel_text_address(pc) || (level++ >= 1 && !fn(arg, pc))))
 			break;
 
-		if (unlikely(!fp_is_valid(fp, sp)))
+		/* Validate frame pointer */
+		low = sp + sizeof(struct stackframe);
+		high = ALIGN(sp, THREAD_SIZE);
+		if (unlikely(fp < low || fp > high || fp & 0x7))
 			break;
-
 		/* Unwind stack frame */
 		frame = (struct stackframe *)fp - 1;
 		sp = fp;
-		if (regs && (regs->epc == pc) && fp_is_valid(frame->ra, sp)) {
-			/* We hit function where ra is not saved on the stack */
+		if (regs && (regs->epc == pc) && (frame->fp & 0x7)) {
 			fp = frame->ra;
 			pc = regs->ra;
 		} else {
 			fp = frame->fp;
-			pc = ftrace_graph_ret_addr(current, &graph_idx, frame->ra,
-						   &frame->ra);
-			if (pc == (unsigned long)ret_from_exception) {
-				if (unlikely(!__kernel_text_address(pc) || !fn(arg, pc)))
-					break;
-
-				pc = ((struct pt_regs *)sp)->epc;
-				fp = ((struct pt_regs *)sp)->s0;
-			}
+			pc = ftrace_graph_ret_addr(current, NULL, frame->ra,
+						   (unsigned long *)(fp - 8));
 		}
 
 	}
@@ -112,7 +93,7 @@ void notrace walk_stackframe(struct task_struct *task,
 	while (!kstack_end(ksp)) {
 		if (__kernel_text_address(pc) && unlikely(!fn(arg, pc)))
 			break;
-		pc = READ_ONCE_NOCHECK(*ksp++) - 0x4;
+		pc = (*ksp++) - 0x4;
 	}
 }
 
