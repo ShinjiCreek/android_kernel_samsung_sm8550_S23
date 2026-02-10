@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- *  linux/fs/read_write.c
+ * linux/fs/read_write.c
  *
- *  Copyright (C) 1991, 1992  Linus Torvalds
+ * Copyright (C) 1991, 1992  Linus Torvalds
  */
 
 #include <linux/slab.h>
@@ -636,17 +636,27 @@ ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
 	return ret;
 }
 
+#ifdef CONFIG_KSU_SUSFS
+extern bool ksu_init_rc_hook __read_mostly;
+extern __attribute__((cold)) void ksu_handle_sys_read(unsigned int fd);
+#endif
+
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_MANUAL_HOOK)
 extern bool ksu_vfs_read_hook __read_mostly;
-extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
+extern int ksu_handle_sys_read_ksu(unsigned int fd, char __user **buf_ptr,
 			size_t *count_ptr);
 #endif
 
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
+#ifdef CONFIG_KSU_SUSFS
+	if (unlikely(ksu_init_rc_hook))
+		ksu_handle_sys_read(fd);
+#endif
+
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_MANUAL_HOOK)
 	if (unlikely(ksu_vfs_read_hook)) 
-		ksu_handle_sys_read(fd, &buf, &count);
+		ksu_handle_sys_read_ksu(fd, &buf, &count);
 #endif
 	return ksys_read(fd, buf, count);
 }
